@@ -1,0 +1,21 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+[[mods]]
+modId="mccp"
+version="0.2.0-alpha"
+displayName="MCCP Embodiment"
+authors="thecakeisalie05"
+description='''A separate autonomous companion body and localhost control/telemetry bridge for MCCP.'''
+[[dependencies.mccp]]
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.mccp]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="BOTH"

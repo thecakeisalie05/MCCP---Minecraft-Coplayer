@@ -1,0 +1,55 @@
+name: Build Forge 1.20.1 MCCP Embodiment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mod/**'
+      - '.github/workflows/mod-build.yml'
+  pull_request:
+    paths:
+      - 'mod/**'
+      - '.github/workflows/mod-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Compile and package Forge mod
+        working-directory: mod
+        run: gradle build --no-daemon --stacktrace
+      - name: Verify Forge jar
+        shell: bash
+        run: |
+          ls -la mod/build/libs/
+          jar tf mod/build/libs/mccp-embodiment-0.2.0-alpha.jar | grep -q 'com/thecakeisalie/mccp/MccpMod.class'
+          jar tf mod/build/libs/mccp-embodiment-0.2.0-alpha.jar | grep -q 'META-INF/mods.toml'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MCCP-Forge-1.20.1
+          path: mod/build/libs/mccp-embodiment-0.2.0-alpha.jar
+          if-no-files-found: error
+      - name: Attach validated jar to rolling alpha release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 40); do
+            if gh release view alpha-latest >/dev/null 2>&1; then break; fi
+            sleep 5
+          done
+          gh release upload alpha-latest "mod/build/libs/mccp-embodiment-0.2.0-alpha.jar" --clobber

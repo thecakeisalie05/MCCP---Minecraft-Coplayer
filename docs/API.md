@@ -10,6 +10,8 @@ All /api/v1/* requests require an X-MCCP-Token header whose value is obtained th
 | --- | --- | --- |
 | GET | /health | Public health / version |
 | GET | /api/v1/state | Complete bounded runtime snapshot, config, goals, proposals, events |
+| GET | /api/v1/game/state | Latest independent companion pose, stats, inventory, viewport entities/blocks, semantic PNG camera |
+| POST | /api/v1/game/telemetry | Accept versioned sensor report from Forge logical server |
 | GET | /api/v1/events?after=123 | Recent events with ID above the supplied number |
 | POST | /api/v1/config | Update allowed runtime settings, including individual modules |
 | POST | /api/v1/control | Pause / resume autonomy, emergency stop, or shut down the daemon |

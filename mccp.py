@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 API_VERSION = "v1"
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.2.0-alpha"
 PORT = int(os.environ.get("MCCP_PORT", "8765"))
 HOST = "127.0.0.1"
 
@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
 }
 ALLOWED_ACTIONS = {
     "say", "look_at", "move_to", "follow", "inspect",
-    "interact", "build", "stop"
+    "interact", "build", "stop", "spawn", "despawn"
 }
 
 
@@ -101,6 +101,7 @@ class Brain:
         self.memory: list[dict] = []
         self.events: deque[dict] = deque(maxlen=400)
         self.observations: deque[dict] = deque(maxlen=80)
+        self.game_snapshot: dict = {}
         self.proposals: list[dict] = []
         self.outbox: list[dict] = []
         self.messages: deque[dict] = deque(maxlen=40)
@@ -167,7 +168,8 @@ class Brain:
                 "recent_observations": list(self.observations)[-5:],
                 "events": list(self.events)[-75:],
                 "messages": list(self.messages)[-20:],
-                "queued_actions": len(self.outbox)
+                "queued_actions": len(self.outbox),
+                "game_connected": bool(self.game_snapshot and time.time() - self.last_seen < 15)
             }
 
     def update_config(self, updates: dict) -> dict:
@@ -275,6 +277,37 @@ class Brain:
                 self.event("perception", "Received " + item["kind"])
                 return item
             return {"received": True, "ignored": "perception disabled"}
+
+    def ingest_game(self, telemetry: dict) -> dict:
+        """Atomically replace latest game state without bloating durable memory."""
+        if not isinstance(telemetry, dict) or telemetry.get("protocol") != "mccp-game-v1":
+            raise ValueError("Unsupported game telemetry protocol")
+        pose = telemetry.get("pose")
+        if not isinstance(pose, dict) or any(
+                not isinstance(pose.get(key), (int, float)) for key in ("x", "y", "z")):
+            raise ValueError("Game telemetry requires a numeric pose")
+        if not isinstance(telemetry.get("inventory", []), list):
+            raise ValueError("Inventory must be a list")
+        if len(telemetry.get("blocks", [])) > 1200 or len(telemetry.get("entities", [])) > 128:
+            raise ValueError("Game telemetry exceeds viewport item limits")
+        with self.lock:
+            self.game_snapshot = telemetry
+            self.last_seen = time.time()
+            if self.config["modules"]["perception"]:
+                item = {
+                    "id": self._id(), "time": self.last_seen,
+                    "kind": "companion_telemetry",
+                    "payload": {
+                        "position": {key: pose[key] for key in ("x", "y", "z")},
+                        "dimension": telemetry.get("dimension", ""),
+                        "health": telemetry.get("stats", {}).get("health"),
+                        "blocks_visible": len(telemetry.get("blocks", [])),
+                        "entities_visible": len(telemetry.get("entities", []))
+                    }
+                }
+                self.observations.append(item)
+            self.event("perception", "Received companion telemetry")
+        return {"accepted": True, "protocol": "mccp-game-v1"}
 
     def propose(self, kind: str, arguments: dict) -> dict:
         if kind not in ALLOWED_ACTIONS or not isinstance(arguments, dict):
@@ -461,8 +494,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_body(self):
         length = int(self.headers.get("Content-Length", "0"))
-        if length < 1 or length > 65536:
-            raise ValueError("Body must be 1–65536 bytes")
+        limit = 1048576 if self.path.startswith("/api/v1/game/telemetry") else 65536
+        if length < 1 or length > limit:
+            raise ValueError("Request body exceeds endpoint size limit")
         return json.loads(self.rfile.read(length))
 
     def do_GET(self):
@@ -473,6 +507,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/state":
             return self.json_response(200, self.brain.snapshot())
+        if path == "/api/v1/game/state":
+            with self.brain.lock:
+                return self.json_response(200, dict(self.brain.game_snapshot) if
+                    self.brain.game_snapshot else {"protocol": "mccp-game-v1", "connected": False})
         if path == "/api/v1/events":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             try:
@@ -496,6 +534,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.brain.update_config(data)
             elif path == "/api/v1/observe":
                 result = self.brain.observe(data)
+            elif path == "/api/v1/game/telemetry":
+                result = self.brain.ingest_game(data)
             elif path == "/api/v1/goals":
                 result = self.brain.add_goal(data.get("text", ""))
             elif path == "/api/v1/goals/status":
@@ -884,6 +924,17 @@ def launch_gui() -> None:
         }))
         refresh()
     ttk.Button(connect_panel, text="Simulate Player Nearby", command=simulate).pack(anchor="w", pady=6)
+    def open_viewer():
+        viewer = Path(sys.executable).parent / "MCCP-Viewer.exe" if getattr(sys, "frozen", False) else Path(__file__).parent / "viewer.py"
+        if not viewer.is_file():
+            messagebox.showerror("MCCP", "Viewer not found beside MCCP.exe. Download MCCP-Viewer.exe from the same release.")
+            return
+        try:
+            args = [str(viewer)] if viewer.suffix.lower() == ".exe" else [sys.executable, str(viewer)]
+            subprocess.Popen(args)
+        except OSError as exc:
+            messagebox.showerror("MCCP", str(exc))
+    ttk.Button(connect_panel, text="Open Companion Viewer", command=open_viewer).pack(anchor="w", pady=6)
 
     refresh_timer = [None]
     initial_sync = [False]

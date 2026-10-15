@@ -181,6 +181,28 @@ class BrainTests(unittest.TestCase):
                 self.brain.ollama("Hi")
         self.assertEqual(len(self.brain.messages), 0)
 
+    def test_ingest_game_state_and_summary(self):
+        report = {"protocol": "mccp-game-v1",
+                  "pose": {"x": 10, "y": 70, "z": -4},
+                  "stats": {"health": 20},
+                  "blocks": [{"block": "minecraft:stone"}],
+                  "entities": [], "inventory": [],
+                  "frame_kind": "semantic_raycast_png", "frame_png_base64": "YWJj"}
+        self.assertTrue(self.brain.ingest_game(report)["accepted"])
+        self.assertEqual(self.brain.game_snapshot["pose"]["x"], 10)
+        self.assertEqual(self.brain.observations[-1]["payload"]["blocks_visible"], 1)
+        self.assertTrue(self.brain.snapshot()["game_connected"])
+        self.assertNotIn("frame_png_base64", str(self.brain.observations[-1]))
+
+    def test_ingest_game_rejects_oversized_or_bad_observations(self):
+        with self.assertRaises(ValueError):
+            self.brain.ingest_game({"protocol": "old", "pose": {"x": 1, "y": 2, "z": 3}})
+        with self.assertRaises(ValueError):
+            self.brain.ingest_game({"protocol": "mccp-game-v1", "pose": {"x": "bad", "y": 2, "z": 3}})
+        with self.assertRaises(ValueError):
+            self.brain.ingest_game({"protocol": "mccp-game-v1", "pose": {"x": 1, "y": 2, "z": 3},
+                                    "blocks": [{}] * 1201})
+
     def test_model_response_is_grounded_and_recorded(self):
         raw = io.BytesIO(json.dumps({"message": {"content": "I can inspect that once connected."}}).encode())
         with mock.patch("mccp.urllib.request.urlopen", return_value=raw):
@@ -270,6 +292,18 @@ class APITests(BrainTests):
         commands = self.request("POST", "/api/v1/commands/poll", {})["commands"]
         self.assertEqual(commands[0]["kind"], "follow")
         self.assertTrue(self.request("GET", "/api/v1/state")["connected"])
+
+    def test_game_bridge_http_flow(self):
+        telemetry = {
+            "protocol": "mccp-game-v1", "pose": {"x": 4, "y": 65, "z": 8},
+            "inventory": [], "blocks": [], "entities": [],
+            "frame_kind": "semantic_raycast_png"
+        }
+        result = self.request("POST", "/api/v1/game/telemetry", telemetry)
+        self.assertTrue(result["accepted"])
+        state = self.request("GET", "/api/v1/game/state")
+        self.assertEqual(state["pose"]["x"], 4)
+        self.assertEqual(state["frame_kind"], "semantic_raycast_png")
 
     def test_api_emergency_stop(self):
         self.request("POST", "/api/v1/actions/propose", {

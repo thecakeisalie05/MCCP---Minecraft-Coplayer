@@ -73,3 +73,21 @@ License: MIT (see LICENSE).
 ## Local model reasoning display
 
 MCCP v0.1.5 strips Qwen-style `<think>…</think>` segments before displaying model replies and before recording them in chat history. It also handles legacy model outputs where the opening `<think>` tag was omitted. If the model emits no visible answer after filtering, MCCP shows a usable error instead of treating reasoning as an answer. This is a display safeguard, not full access to or control over a model's internal reasoning. Remember to restart the brain after downloading a new executable.
+
+
+## Embodied GTE companion (early integration alpha)
+
+**Two executables and one Forge 1.20.1 mod** are built from this repository:
+- MCCP.exe — existing background brain/control center
+- MCCP-Viewer.exe — independent live telemetry and manual control desk
+- mccp-embodiment-0.2.0-alpha.jar — Forge client+integrated-server companion
+
+Start MCCP.exe, put the mod JAR in the GTE Minecraft 1.20.1 Forge \`mods\` folder, enter a single-player world, and start MCCP-Viewer.exe. The viewer can issue **Spawn**, **Move To**, **Look At**, **Follow**, **Stop**, **Say**, and **Despawn** through the same approved-command API intended for future Qwen skill calls. The mod reads the MCCP token from \`%APPDATA%\MCCP\api-token\` and polls \`127.0.0.1:8765\`. Commands execute on the Minecraft server thread.
+
+The companion is a **separate humanoid server entity**, not a second online-authenticated \`ServerPlayer\`. It has its own ID, inventory, health, hunger-like stats, position, and navigation. This avoids requiring an additional Minecraft account. It cannot yet do everything mods reserve for genuine \`ServerPlayer\` instances. Later mod integrations will use dedicated adapters (or an authenticated second client if true player semantics are indispensable).
+
+**Camera limitation:** The first image feed is **48×27 semantic raycast PNG**, showing map colors of collision surfaces in the companion's view. It is *not* a Minecraft GPU-rendered screenshot, does not depict textured blocks/entities/particles, and is clearly marked \`frame_kind=semantic_raycast_png\`. The field can later be upgraded to a real client-side render without changing the viewer's API. Nearby blocks/entities in a forward cone are also reported with IDs, namespace/mod, coordinates, orientations, basic data. The cone is not a fully occlusion-tested frustum; limited to 1200 non-air blocks and 128 entities, updated every 2 seconds, to avoid TPS collapse.
+
+For a dedicated server not running on the user's PC, localhost routing needs a **separate authenticated relay**; this release targets integrated single-player first. The optional operator commands \`/mccp spawn\` and \`/mccp remove\` work when cheats/operators are enabled.
+
+See [bridge protocol](docs/GAME_BRIDGE.md). Experimental; test on a backed-up world.
