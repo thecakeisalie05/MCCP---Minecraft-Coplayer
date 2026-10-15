@@ -361,11 +361,12 @@ public final class SmartNavigation {
                 || !level.hasChunkAt(floor)) return false;
         for (BlockPos at : new BlockPos[]{node, node.above()}) {
             BlockState state = level.getBlockState(at);
-            if (!level.getFluidState(at).isEmpty()) return false;
+            if (!level.getFluidState(at).isEmpty() || RoutePlanner.isHazard(state)) return false;
             if (!state.getCollisionShape(level, at).isEmpty()
                     && !RoutePlanner.isOpenableDoor(state)) return false;
         }
         BlockState support = level.getBlockState(floor);
+        if (RoutePlanner.isHazard(support)) return false;
         return !support.getCollisionShape(level, floor).isEmpty()
             || level.getBlockState(node).is(BlockTags.CLIMBABLE)
             || support.is(BlockTags.CLIMBABLE);

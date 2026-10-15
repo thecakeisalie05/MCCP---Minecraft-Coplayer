@@ -249,7 +249,7 @@ public final class RoutePlanner {
         BlockState feetState = level.getBlockState(pos);
         BlockState headState = level.getBlockState(head);
         BlockState floorState = level.getBlockState(floor);
-        if (hazard(feetState) || hazard(headState) || hazard(floorState)) {
+        if (isHazard(feetState) || isHazard(headState) || isHazard(floorState)) {
             unsafe = true;
             return false;
         }
@@ -260,7 +260,7 @@ public final class RoutePlanner {
 
     private boolean passable(BlockPos pos) {
         BlockState state = level.getBlockState(pos);
-        if (hazard(state)) return false;
+        if (isHazard(state)) return false;
         if (!level.getFluidState(pos).isEmpty()) return false;
         if (state.getCollisionShape(level, pos).isEmpty()) return true;
         return isOpenableDoor(state);
@@ -271,7 +271,7 @@ public final class RoutePlanner {
             && state.is(BlockTags.WOODEN_DOORS);
     }
 
-    private boolean hazard(BlockState state) {
+    public static boolean isHazard(BlockState state) {
         return state.is(Blocks.LAVA) || state.is(Blocks.MAGMA_BLOCK)
             || state.is(Blocks.CACTUS) || state.is(Blocks.FIRE)
             || state.is(Blocks.SOUL_FIRE) || state.is(Blocks.CAMPFIRE)
