@@ -153,7 +153,7 @@ class BrainTests(unittest.TestCase):
         self.assertEqual(mccp.visible_model_reply(text), "Hello! I am ready to help.")
 
     def test_visible_model_reply_handles_orphan_think_close(self):
-        text = ("I should write a greeting.\\n</think>\\n"
+        text = ("I should write a greeting.\n</think>\n"
                 "Hi! Ready to explore GTE.")
         self.assertEqual(mccp.visible_model_reply(text), "Hi! Ready to explore GTE.")
 
