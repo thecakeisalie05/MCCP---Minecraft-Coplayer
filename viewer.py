@@ -600,8 +600,13 @@ class Viewer:
         self.counts.set("Blocks %d%s | Entities %d | Inventory %d" % (
             len(blocks), " (truncated)" if state.get("blocks_truncated") else "",
             len(entities), len(items)))
-        self.frame_kind.configure(text="Frame: " + state.get("frame_kind", "none") +
-                                  " | Not a GPU screenshot")
+        frame_kind = state.get("frame_kind", "none")
+        kind_label = {
+            "semantic_raycast_png": "CPU RAYCAST",
+            "gpu_voxel_shader_png": "GPU VOXEL SHADER",
+            "unavailable": "NO VIDEO",
+        }.get(frame_kind, frame_kind.upper())
+        self.frame_kind.configure(text=kind_label)
         cfg = state.get("preview_config") or {}
         if cfg and not self.preview_loaded:
             self.preview_loaded = True
@@ -625,15 +630,12 @@ class Viewer:
         frame_tick = state.get("frame_timestamp_ms", stamp)
         if frame and (frame_tick != self.frame_tick or frame != self.last_frame):
             try:
-                native = tk.PhotoImage(data=frame, format="png")
-                width = max(1, int(state.get("frame_width", native.width())))
-                factor = max(1, min(10, 460 // width))
-                self.image = native.zoom(factor, factor)
-                self.frame_label.configure(image=self.image, text="")
+                self.raw_image = tk.PhotoImage(data=frame, format="png")
+                self._draw_camera()
                 self.last_frame = frame
                 self.frame_tick = frame_tick
             except tk.TclError as error:
-                self.frame_label.configure(text="PNG decode failed: " + str(error), image="")
+                self.frame_kind.configure(text="PNG ERROR: " + str(error)[:80])
 
     def run(self):
         self.root.mainloop()
