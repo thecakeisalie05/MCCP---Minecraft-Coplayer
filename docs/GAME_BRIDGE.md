@@ -127,3 +127,32 @@ The telemetry includes a \`navigation\` object with \`mode\` (\`idle\`, \`move_t
 ### Manual acceptance tests
 
 On a BACKED-UP creative test world, test flat ground, a 90° corridor, a closed wooden door, a ladder between floors, closed/open trapdoors, a two-block drop and a dangerous tall drop. Then test a moving player with follow continuously, target moving behind obstacles, \`stop_follow\`, and a sealed enclosure for \`check_route\`. Check that MCCP reports only bounded failures and never blindly teleports or takes a tall fall. The Java source has been compiled in CI; these exact in-game cases still require testing before autonomous or production use.
+
+
+## Baritone-informed segmented navigation (2026-10)
+
+MCCP's original bounded planner could **stand motionless at long range**, because it selected an arbitrary point 32 blocks toward the player and required that point to be reached exactly. Failure to reach that artificial coordinate meant no motion, even when reachable terrain led elsewhere.
+
+The current implementation retains MCCP's own server-owned companion, protocol, and collision-aware movement rules, but adopts several **architectural concepts observed directly in Baritone 1.20.1 source**:
+
+- [Baritone \`AStarPathFinder\`](https://github.com/cabaletta/baritone/blob/1.20.1/src/main/java/baritone/pathing/calc/AStarPathFinder.java): maintain best reachable progress and return a useful partial path when the goal isn't reached.
+- [Baritone \`AbstractNodeCostSearch\`](https://github.com/cabaletta/baritone/blob/1.20.1/src/main/java/baritone/pathing/calc/AbstractNodeCostSearch.java): distinguish a successful path segment from reaching the actual goal.
+- [Baritone \`Moves\`](https://github.com/cabaletta/baritone/blob/1.20.1/src/main/java/baritone/pathing/movement/Moves.java): movement-transition-specific costs, including cardinal/diagonal movement, safe ascents, descents and climbing.
+- [Baritone \`PathingBehavior\`](https://github.com/cabaletta/baritone/blob/1.20.1/src/main/java/baritone/behavior/PathingBehavior.java): separate path calculation from execution and continue segment by segment.
+
+**This is independently implemented MCCP code inspired by those concepts, not a verbatim or complete port of Baritone.** Baritone is LGPL-3.0 and remains copyright its respective authors; see its [license](https://github.com/cabaletta/baritone/blob/1.20.1/LICENSE). We did not introduce a direct runtime dependency or copy Baritone source classes into MCCP.
+
+MCCP's planner now targets the **real player/destination directly**, searching the current bounded, loaded region (48 horizontal and 16 vertical blocks). When it can't prove the full route, it may return a verified **segment** ending at a reachable frontier, walk it, and run a new bounded search from the updated actual position. The planner is incremental and executed on the Minecraft server thread with a ceiling of roughly **110 A* expansions and 1.5 ms per active planning tick** (every other server tick). The diagnostic route check has a smaller separate budget. Calls avoid chunk loading.
+
+Additional improvements: safe diagonal steps with corner-clearance checks; explicit collision/hazard checks; partial progress telemetry (\`expanded_nodes\`, \`completed_segments\`, \`remaining_waypoints\`); no-progress detection measured against the next waypoint; rejection of repeatedly stalled path endpoints; target-motion replanning; retry backoff. \`check_route\` reports a **partial route separately from a complete verified route** and runs without blocking the server thread.
+
+Limitations remain: chunk simulation distance can stop the entity from ticking, modded collision shapes and movement adapters need manual tests, plan geometries can become stale, and this does not implement Baritone's complete Minecraft-player movement executor or sophisticated ahead-of-time path splicing. Planning and route execution must be tested independently in-world. A partial route is useful progress, **not** a guarantee that the final target is reachable.
+
+### Recommended regression scenarios
+
+1. From 80–120 blocks away in an open but loaded/simulated area, \`follow_continuous\` should produce \`planning\` → \`traversing_partial_path\` → repeated segments instead of immediate failure.
+2. Behind a solid wall with a remote doorway, the route must detour rather than select a blocked geometric checkpoint.
+3. On a sealed enclosure, \`check_route\` must not report full success without reaching the goal.
+4. Closed wooden doors, stairs, ladders, trapdoors, one- and two-block drops, dangerous high drops and lava should use conservative transitions and never teleport through obstacles.
+5. While moving the target, \`follow_continuous\` should replan and then hold near the player; \`stop_follow\` must cancel movement.
+6. Benchmark worst-case search on GTCEu-dense terrain; if tick times spike, reduce the node/time budgets or adjust world access.
