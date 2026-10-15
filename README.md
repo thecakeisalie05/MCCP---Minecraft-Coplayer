@@ -109,3 +109,8 @@ The viewer provides independent **renderer**, **resolution** and **FPS** control
 - Full block/entity telemetry stays on a slower 2-second cadence, while pose/stats are sampled at roughly 5 Hz.
 
 Run **both updated desktop executables and the new Forge JAR**. Preview configuration is stored by the MCCP daemon and read by the server and client modules independently every few seconds; there is no new port. The GPU setting is opt-in. If you see an OpenGL shader failure in `latest.log`, choose CPU mode. GPU rendering requires the Minecraft client (not a headless dedicated server). This implementation has been CI compiled but requires manual validation with GTE, Embeddium, Oculus and the target GPU; offscreen OpenGL state can interact with rendering mods.
+
+
+## Navigation and follow improvements
+
+The Forge companion now has a terrain-aware bounded A* search and a movement/follow state machine. The Viewer provides **Follow Once**, **Follow Continuously**, **Stop Following** and **Check Route** controls, as well as a live navigation mode/status/remaining-waypoints line. Continuous follow is an actual persistent server-side behavior with arrival hysteresis, progress detection, drift-driven replanning and backoff. The companion sends "I'm coming!" when it starts following and reports bounded navigation failures through Minecraft chat. See [GAME_BRIDGE.md](docs/GAME_BRIDGE.md) for safety bounds, 3D ladder/door/trapdoor handling, and acceptance tests. This is an alpha; AI action execution should remain manually approved.

@@ -68,6 +68,22 @@ class BrainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.brain.propose("shell_command", {"command": "rm -rf /"})
 
+    def test_route_probe_requires_no_world_action_permission(self):
+        for name in ("check_route", "stop_follow"):
+            proposal = self.brain.propose(name, {"player": ""})
+            result = self.brain.decide_proposal(proposal["id"], True)
+            self.assertEqual(result["status"], "approved")
+        self.assertEqual(len(self.brain.poll_commands()), 2)
+
+    def test_persistent_follow_requires_explicit_permission(self):
+        proposal = self.brain.propose("follow_continuous", {"player": ""})
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            self.brain.decide_proposal(proposal["id"], True)
+        self.brain.update_config({"allow_world_actions": True})
+        self.assertEqual(self.brain.decide_proposal(proposal["id"], True)["status"],
+                         "approved")
+        self.assertEqual(self.brain.poll_commands()[0]["kind"], "follow_continuous")
+
     def test_goals(self):
         goal = self.brain.add_goal("Explore the base")
         self.assertEqual(goal["status"], "pending")

@@ -81,6 +81,7 @@ public final class Observer {
         stats.addProperty("swimming", avatar.isSwimming());
         stats.addProperty("navigation_done", avatar.getNavigation().isDone());
         root.add("stats", stats);
+        root.add("navigation", SmartNavigation.status(avatar));
         JsonArray inventory = new JsonArray();
         for (int slot = 0; slot < avatar.backpack().getContainerSize(); slot++) {
             ItemStack stack = avatar.backpack().getItem(slot);

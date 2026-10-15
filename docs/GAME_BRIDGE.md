@@ -108,3 +108,22 @@ Independent authenticated POST `/api/v1/game/frame` accepts `mccp-frame-v1` with
 The optional client renderer uses two GLSL files in `assets/mccp/shaders/`: `voxel.vert` (fullscreen triangle) and `voxel.frag` (volumetric ray marching). OpenGL 3.3 uses a 32×24×32 RGBA8 occupancy texture and an offscreen framebuffer. The result is a simplified color-coded block scene, not a faithful second Minecraft camera; transparent blocks are currently treated as solid. Shader compilation and framebuffer errors log a warning and disable GPU capture briefly; CPU mode remains selectable. GPU readback and Java-side voxel sampling still cost CPU/render time, even when ray evaluation occurs on the GPU. Benchmark before increasing FPS in heavy modpacks.
 
 `frame_kind=semantic_raycast_png` remains the CPU fallback. If GPU is configured but the client cannot render, live pose/stats and block samples are unaffected, while the camera remains pending. The protocol's `frame_kind` differentiates capture providers for future fully textured cameras.
+
+
+## Deterministic navigation (new navigation alpha)
+
+The companion now has a bounded **terrain-aware A\*** route planner plus a persistent server-side movement state machine. It does not simply call vanilla \`moveTo(player)\` every few ticks.
+
+- \`move_to\`: check a safe route to the target coordinate, execute grid waypoints using physical movement, and announce if no suitable route was found.
+- \`check_route\`: **non-moving** check. Arguments \`{"x":10,"y":70,"z":20}\` or \`{"player":"Name"}\`. Reports the result in Minecraft chat.
+- \`follow\`: one-time follow. MCCP says "I'm coming!" only when a route is found, reaches within approximately 2.75 blocks (and similar height), says "I'm here!", then ends the task.
+- \`follow_continuous\`: persistent follow that holds position within 2.75 blocks and resumes when separated by more than 4.5 blocks. It replans when the target moves significantly, is obstructed, or movement stalls, rather than restarting \`goto\` every tick. Distant targets are pursued via bounded intermediate regions. A failed plan is retried every five seconds; chat failures are throttled.
+- \`stop_follow\` or \`stop\`: end active tracking and movement. Both are allowed even when world-changing actions are disabled.
+
+**Safety and scope:** A\* runs on the loaded server world only (at most about 48 horizontal and 16 vertical blocks per search, up to 6,500 expanded nodes). Routes are discrete traversable 1×2 body cells over solid supports, with one-block climbs/jumps and at most two-block drops. Path candidates reject liquids, certain damaging blocks, unloaded chunks, unsupported falls, and impassable walls; closed wooden doors are traversed by opening them as the agent approaches. Ladder sections are identified as vertical transitions and handled by a custom climbing motion policy. Closed trapdoors can provide floor support but are not automatically opened; iron doors, nonstandard modded doors, special portals and elevators require adapters. Minecraft collision, door redstone, dynamic entities, loaded-chunk changes and modded blocks can still invalidate a planned route. **A failed bounded search is not a mathematical proof that no valid route exists in the entire world.** Failures such as \`search_budget_exhausted\` are reported explicitly instead of claiming global impossibility.
+
+The telemetry includes a \`navigation\` object with \`mode\` (\`idle\`, \`move_to\`, \`follow_once\`, \`follow_continuous\`), \`status\`, \`remaining_waypoints\`, and \`search_failures\`. The viewer displays those states without requiring a brain API protocol change. Manual movement overrides automatic follow; cancellation is explicit. Navigation is intentionally non-persistent across game restarts.
+
+### Manual acceptance tests
+
+On a BACKED-UP creative test world, test flat ground, a 90° corridor, a closed wooden door, a ladder between floors, closed/open trapdoors, a two-block drop and a dangerous tall drop. Then test a moving player with follow continuously, target moving behind obstacles, \`stop_follow\`, and a sealed enclosure for \`check_route\`. Check that MCCP reports only bounded failures and never blindly teleports or takes a tall fall. The Java source has been compiled in CI; these exact in-game cases still require testing before autonomous or production use.

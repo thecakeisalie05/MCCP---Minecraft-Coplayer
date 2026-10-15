@@ -53,7 +53,8 @@ DEFAULT_CONFIG = {
 ALLOWED_ACTIONS = {
     "say", "look_at", "move_to", "follow", "inspect",
     "interact", "build", "stop", "spawn", "despawn",
-    "jump", "turn_by", "move_relative"
+    "jump", "turn_by", "move_relative", "follow_continuous",
+    "stop_follow", "check_route"
 }
 
 
@@ -417,7 +418,8 @@ class Brain:
                     raise ValueError("Proposal already reviewed")
                 if approved and self.paused:
                     raise ValueError("Brain is paused; resume before approving actions")
-                if approved and proposal["kind"] not in ("say", "inspect", "look_at", "stop") \
+                if approved and proposal["kind"] not in ("say", "inspect", "look_at", "stop",
+                                                        "stop_follow", "check_route") \
                         and not self.config["allow_world_actions"]:
                     raise ValueError("World actions are disabled; enable them first")
                 proposal["status"] = "approved" if approved else "rejected"

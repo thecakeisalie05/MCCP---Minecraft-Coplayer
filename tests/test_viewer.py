@@ -39,6 +39,11 @@ class ViewerTests(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(viewer.WORLD_ACTIONS))
 
+    def test_follow_continuous_is_gated_but_route_probe_and_stop_are_safe(self):
+        self.assertIn("follow_continuous", viewer.WORLD_ACTIONS)
+        self.assertNotIn("check_route", viewer.WORLD_ACTIONS)
+        self.assertNotIn("stop_follow", viewer.WORLD_ACTIONS)
+
     def test_background_error_callback_captures_exception_text(self):
         v = viewer.Viewer.__new__(viewer.Viewer)
         v.root = FakeRoot()

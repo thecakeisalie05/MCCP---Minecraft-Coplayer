@@ -62,6 +62,7 @@ public final class Bridge {
             for (CompanionEntity companion : online.serverLevel().getEntitiesOfClass(
                     CompanionEntity.class, online.getBoundingBox().inflate(128))) {
                 if (companion.isRemoved()) continue;
+                SmartNavigation.cleared(companion.getUUID());
                 companion.discard();
                 removed++;
             }
@@ -81,6 +82,7 @@ public final class Bridge {
 
     public static void tick(MinecraftServer server) {
         ticks++;
+        SmartNavigation.tick(server);
         if (ticks % 5 == 0) poll(server);
         if (ticks % 100 == 1) refreshPreview();
         // Pose/stats = 5Hz; heavy block scan = 0.5Hz; camera = configured FPS.
@@ -252,7 +254,10 @@ public final class Bridge {
         }
         if (companion == null) return;
         switch (kind) {
-            case "despawn" -> companion.discard();
+            case "despawn" -> {
+                SmartNavigation.stop(companion);
+                companion.discard();
+            }
             case "jump" -> companion.getJumpControl().jump();
             case "turn_by" -> {
                 double degrees = Math.max(-90.0, Math.min(90.0, number(args, "degrees", 0)));
@@ -262,6 +267,7 @@ public final class Bridge {
                 companion.setYBodyRot(yaw);
             }
             case "move_relative" -> {
+                SmartNavigation.stop(companion); // explicit manual override
                 double forward = Math.max(-1, Math.min(1, number(args, "forward", 0)));
                 double strafe = Math.max(-1, Math.min(1, number(args, "strafe", 0)));
                 double distance = Math.max(0, Math.min(3, number(args, "blocks", 1)));
@@ -274,13 +280,12 @@ public final class Bridge {
                     companion.getNavigation().moveTo(target.x, target.y, target.z, 1.0);
                 }
             }
-            case "stop" -> companion.getNavigation().stop();
+            case "stop", "stop_follow" -> SmartNavigation.stop(companion);
             case "move_to" -> {
                 double x = number(args, "x", companion.getX());
                 double y = number(args, "y", companion.getY());
                 double z = number(args, "z", companion.getZ());
-                if (companion.position().distanceToSqr(x, y, z) > 64 * 64) return;
-                companion.getNavigation().moveTo(x, y, z, 1.0);
+                SmartNavigation.moveTo(server, companion, new Vec3(x, y, z));
             }
             case "look_at" -> {
                 double x = number(args, "x", companion.getX());
@@ -296,13 +301,28 @@ public final class Bridge {
                 companion.setYHeadRot(yaw);
                 companion.setYBodyRot(yaw);
             }
-            case "follow" -> {
+            case "follow", "follow_continuous" -> {
                 String name = string(args, "player", "");
-                ServerPlayer player = server.getPlayerList().getPlayers().stream()
-                    .filter(p -> name.isBlank() || p.getGameProfile().getName().equalsIgnoreCase(name))
-                    .findFirst().orElse(null);
-                if (player != null && player.level() == companion.level())
-                    companion.getNavigation().moveTo(player, 1.0);
+                String status = SmartNavigation.startFollow(server, companion, name,
+                    "follow_continuous".equals(kind));
+                if (status.startsWith("player_not_found")) {
+                    server.getPlayerList().broadcastSystemMessage(
+                        Component.literal("<MCCP> I can't find that player nearby."), false);
+                }
+            }
+            case "check_route" -> {
+                String name = string(args, "player", "");
+                boolean xyz = args.has("x") && args.has("y") && args.has("z");
+                ServerPlayer player = xyz ? null : SmartNavigation.findPlayer(server, name, companion);
+                if (!xyz && player == null) {
+                    server.getPlayerList().broadcastSystemMessage(
+                        Component.literal("<MCCP> I need coordinates or an online player to check."), false);
+                } else {
+                    Vec3 goal = xyz ? new Vec3(
+                        number(args, "x", 0), number(args, "y", 0), number(args, "z", 0))
+                        : player.position();
+                    SmartNavigation.probe(server, companion, goal, player != null);
+                }
             }
             case "say" -> {
                 String text = string(args, "text", "");

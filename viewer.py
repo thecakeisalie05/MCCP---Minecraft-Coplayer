@@ -17,6 +17,7 @@ from mccp import api, APP_VERSION
 
 POLL_SECONDS = 0.12
 WORLD_ACTIONS = {"spawn", "despawn", "move_to", "look_at", "follow",
+                 "follow_continuous",
                  "move_relative", "turn_by", "jump"}
 
 
@@ -110,6 +111,7 @@ class Viewer:
         self.pose = tk.StringVar(value="WAITING FOR TELEMETRY")
         self.stats = tk.StringVar(value="HEALTH --/--   ·   FOOD --   ·   AIR --")
         self.counts = tk.StringVar(value="BLOCKS 0   ·   ENTITIES 0   ·   ITEMS 0")
+        self.navigation_state = tk.StringVar(value="NAVIGATION  /  IDLE")
         self.x = tk.StringVar(value="0")
         self.y = tk.StringVar(value="65")
         self.z = tk.StringVar(value="0")
@@ -265,6 +267,8 @@ class Viewer:
             side="left")
         ttk.Label(controls_heading, text="MANUAL / LOCAL", style="Muted.TLabel",
                   font=("Consolas", 8)).pack(side="right")
+        ttk.Label(deck, textvariable=self.navigation_state, style="Muted.TLabel",
+                  font=("Consolas", 9)).grid(row=3, column=0, sticky="ew", pady=(7, 0))
 
         # Critical buttons and permission state never scroll away.
         quick = ttk.Frame(deck, style="Panel.TFrame")
@@ -349,6 +353,9 @@ class Viewer:
         ttk.Button(destination_buttons, text="LOOK AT XYZ",
                    command=lambda: self.coordinate_command("look_at")).grid(
             row=0, column=1, sticky="ew", padx=(4, 3))
+        ttk.Button(destination, text="CHECK SAFE ROUTE TO XYZ",
+                   command=lambda: self.coordinate_command("check_route")).pack(
+                       fill="x", padx=3, pady=(7, 0))
 
         follow = self._section(parent, "Player tracking")
         ttk.Label(follow, text="Player name (leave empty for first online player)",
@@ -357,10 +364,25 @@ class Viewer:
         follow_row.pack(fill="x", pady=(7, 0))
         ttk.Entry(follow_row, textvariable=self.auto_follow).pack(
             side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(follow_row, text="FOLLOW",
+        ttk.Button(follow_row, text="FOLLOW ONCE",
                    command=lambda: self.send("follow", {
                        "player": self.auto_follow.get()
                    })).pack(side="right")
+        tracking = ttk.Frame(follow, style="Panel.TFrame")
+        tracking.pack(fill="x", pady=(8, 0))
+        tracking.columnconfigure(0, weight=1)
+        tracking.columnconfigure(1, weight=1)
+        ttk.Button(tracking, text="FOLLOW CONTINUOUSLY", style="Accent.TButton",
+                   command=lambda: self.send("follow_continuous", {
+                       "player": self.auto_follow.get()
+                   })).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(tracking, text="STOP FOLLOWING",
+                   command=lambda: self.send("stop_follow", {})).grid(
+                       row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(follow, text="CHECK ROUTE TO PLAYER",
+                   command=lambda: self.send("check_route", {
+                       "player": self.auto_follow.get()
+                   })).pack(fill="x", pady=(8, 0))
 
         chat = self._section(parent, "Companion speech")
         ttk.Label(chat, text="Broadcast a message as MCCP in game chat",
@@ -587,6 +609,14 @@ class Viewer:
             self.status.set("LIVE / companion " + str(state.get("companion_id", ""))[:8])
         pos = state["pose"]
         stats = state.get("stats") or {}
+        nav = state.get("navigation") or {}
+        self.navigation_state.set(
+            "NAVIGATION  /  %s  /  %s  /  %d waypoints" % (
+                nav.get("mode", "idle").upper(),
+                nav.get("status", "idle"),
+                nav.get("remaining_waypoints", 0)
+            )
+        )
         self.pose.set("XYZ: %.2f %.2f %.2f    yaw %.1f° / pitch %.1f°    heading %s" % (
             pos.get("x", 0), pos.get("y", 0), pos.get("z", 0),
             pos.get("yaw", 0), pos.get("pitch", 0), pos.get("heading", "unknown")))
