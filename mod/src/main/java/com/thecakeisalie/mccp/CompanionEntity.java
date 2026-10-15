@@ -40,7 +40,7 @@ public final class CompanionEntity extends PathfinderMob {
     }
 
     @Override
-    protected void addAdditionalSaveData(CompoundTag tag) {
+    public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         tag.put("MCCPInventory", backpack.createTag());
         tag.putInt("MCCPHunger", hunger);
@@ -48,7 +48,7 @@ public final class CompanionEntity extends PathfinderMob {
     }
 
     @Override
-    protected void readAdditionalSaveData(CompoundTag tag) {
+    public void readAdditionalSaveData(CompoundTag tag) {
         super.readAdditionalSaveData(tag);
         if (tag.contains("MCCPInventory")) backpack.fromTag(tag.getList("MCCPInventory", 10));
         if (tag.contains("MCCPHunger")) setHunger(tag.getInt("MCCPHunger"));
