@@ -66,14 +66,14 @@ def visible_model_reply(content: str) -> str:
     if not isinstance(content, str):
         return ""
     # Complete segments may appear multiple times.
-    clean = re.sub(r"<\\s*think\\s*>.*?<\\s*/\\s*think\\s*>", "",
+    clean = re.sub(r"<\s*think\s*>.*?<\s*/\s*think\s*>", "",
                    content, flags=re.IGNORECASE | re.DOTALL)
     # An unterminated opening tag means everything following it is unfinished reasoning.
-    clean = re.sub(r"<\\s*think\\s*>.*$", "", clean,
+    clean = re.sub(r"<\s*think\s*>.*$", "", clean,
                    flags=re.IGNORECASE | re.DOTALL)
     # Some model templates emit reasoning without the opening tag; keep only
     # the text following the final closing marker.
-    clean = re.split(r"<\\s*/\\s*think\\s*>", clean, flags=re.IGNORECASE)[-1]
+    clean = re.split(r"<\s*/\s*think\s*>", clean, flags=re.IGNORECASE)[-1]
     return clean.strip()
 
 
