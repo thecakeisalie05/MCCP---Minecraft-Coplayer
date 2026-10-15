@@ -69,3 +69,7 @@ See [API documentation](docs/API.md) for integration details and the action prot
 MCCP uses an automatically generated local API token, authenticates all private endpoints, and only binds on loopback. Changes that affect world state require a separate enable switch and user review before entering the output queue. The protocol does not yet provide durable delivery or multiplayer identity verification: **use a local test world until the bridge protocol is hardened.**
 
 License: MIT (see LICENSE).
+
+## Local model reasoning display
+
+MCCP v0.1.5 strips Qwen-style `<think>…</think>` segments before displaying model replies and before recording them in chat history. It also handles legacy model outputs where the opening `<think>` tag was omitted. If the model emits no visible answer after filtering, MCCP shows a usable error instead of treating reasoning as an answer. This is a display safeguard, not full access to or control over a model's internal reasoning. Remember to restart the brain after downloading a new executable.

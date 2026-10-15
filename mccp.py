@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 API_VERSION = "v1"
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 PORT = int(os.environ.get("MCCP_PORT", "8765"))
 HOST = "127.0.0.1"
 
@@ -52,6 +53,28 @@ ALLOWED_ACTIONS = {
     "say", "look_at", "move_to", "follow", "inspect",
     "interact", "build", "stop"
 }
+
+
+def visible_model_reply(content: str) -> str:
+    """Remove model-generated <think> sections from a user-visible reply.
+
+    Some Qwen3/Ollama combinations return reasoning embedded in message.content
+    even when think=False. Handle complete sections, unterminated sections,
+    and legacy outputs with only a closing tag (as observed in the GUI).
+    Never present speculative internal reasoning as a finished response.
+    """
+    if not isinstance(content, str):
+        return ""
+    # Complete segments may appear multiple times.
+    clean = re.sub(r"<\\s*think\\s*>.*?<\\s*/\\s*think\\s*>", "",
+                   content, flags=re.IGNORECASE | re.DOTALL)
+    # An unterminated opening tag means everything following it is unfinished reasoning.
+    clean = re.sub(r"<\\s*think\\s*>.*$", "", clean,
+                   flags=re.IGNORECASE | re.DOTALL)
+    # Some model templates emit reasoning without the opening tag; keep only
+    # the text following the final closing marker.
+    clean = re.split(r"<\\s*/\\s*think\\s*>", clean, flags=re.IGNORECASE)[-1]
+    return clean.strip()
 
 
 def atomic_json_write(path: Path, value: dict) -> None:
@@ -344,8 +367,14 @@ class Brain:
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise RuntimeError("Ollama request failed. Is Ollama running with model " + model + "? " + str(exc))
         message = result.get("message") or {}
-        reply = message.get("content", "")
-        if not isinstance(reply, str) or not reply.strip():
+        raw_reply = message.get("content", "")
+        reply = visible_model_reply(raw_reply)
+        if not reply:
+            if isinstance(raw_reply, str) and raw_reply.strip():
+                raise RuntimeError(
+                    "Ollama returned only reasoning text, without a usable reply. "
+                    "Try a shorter prompt, update Ollama, or select a non-thinking model."
+                )
             # Never mistake hidden reasoning for an answer or display it in chat.
             if isinstance(message.get("thinking"), str) and message["thinking"].strip():
                 raise RuntimeError(

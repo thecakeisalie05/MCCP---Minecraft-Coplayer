@@ -147,6 +147,40 @@ class BrainTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "done_reason=stop"):
                 self.brain.ollama("Hello")
 
+    def test_visible_model_reply_strips_embedded_thinking(self):
+        text = ("<think>Plan internally, do not show this.</think> "
+                "Hello! I am ready to help.")
+        self.assertEqual(mccp.visible_model_reply(text), "Hello! I am ready to help.")
+
+    def test_visible_model_reply_handles_orphan_think_close(self):
+        text = ("I should write a greeting.\\n</think>\\n"
+                "Hi! Ready to explore GTE.")
+        self.assertEqual(mccp.visible_model_reply(text), "Hi! Ready to explore GTE.")
+
+    def test_visible_model_reply_discards_unclosed_thinking(self):
+        self.assertEqual(mccp.visible_model_reply("<think>Still reasoning"), "")
+        self.assertEqual(mccp.visible_model_reply("Hello. <think>private"), "Hello.")
+        self.assertEqual(mccp.visible_model_reply(None), "")
+
+    def test_ollama_does_not_log_thinking_as_chat(self):
+        raw = io.BytesIO(json.dumps({"message": {
+            "content": "<think>Reasoning should remain hidden</think> Hello!"
+        }}).encode())
+        with mock.patch("mccp.urllib.request.urlopen", return_value=raw):
+            reply = self.brain.ollama("Hi")
+        self.assertEqual(reply, "Hello!")
+        self.assertEqual(self.brain.messages[-1]["text"], "Hello!")
+        self.assertNotIn("Reasoning", str(self.brain.messages))
+
+    def test_ollama_only_think_text_is_actionable_error(self):
+        raw = io.BytesIO(json.dumps({"message": {
+            "content": "<think>No final output</think>"
+        }}).encode())
+        with mock.patch("mccp.urllib.request.urlopen", return_value=raw):
+            with self.assertRaisesRegex(RuntimeError, "only reasoning text"):
+                self.brain.ollama("Hi")
+        self.assertEqual(len(self.brain.messages), 0)
+
     def test_model_response_is_grounded_and_recorded(self):
         raw = io.BytesIO(json.dumps({"message": {"content": "I can inspect that once connected."}}).encode())
         with mock.patch("mccp.urllib.request.urlopen", return_value=raw):
