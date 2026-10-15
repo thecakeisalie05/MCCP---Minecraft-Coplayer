@@ -65,7 +65,7 @@ class ViewerTests(unittest.TestCase):
             callback()
         self.assertIn("VERSION MISMATCH", v.status.value)
         self.assertFalse(v.busy)
-        self.assertEqual(v.root.actions.get(timeout=2)[0], 1000)
+        self.assertEqual(v.root.actions.get(timeout=2)[0], int(viewer.POLL_SECONDS * 1000))
         self.assertIn("version mismatch", logs[0].lower())
 
     def test_waiting_state_is_not_mistaken_for_offline(self):
