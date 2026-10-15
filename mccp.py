@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 API_VERSION = "v1"
-APP_VERSION = "0.2.1-alpha"
+APP_VERSION = "0.2.2-alpha"
 PORT = int(os.environ.get("MCCP_PORT", "8765"))
 HOST = "127.0.0.1"
 
@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
         "autonomy": True, "voice": False
     },
     "allow_world_actions": False,
+    "preview": {"backend": "cpu", "width": 64, "height": 36, "fps": 2},
 }
 ALLOWED_ACTIONS = {
     "say", "look_at", "move_to", "follow", "inspect",
@@ -103,6 +104,8 @@ class Brain:
         self.events: deque[dict] = deque(maxlen=400)
         self.observations: deque[dict] = deque(maxlen=80)
         self.game_snapshot: dict = {}
+        self.game_frame: dict = {}
+        self.game_frame_at = 0.0
         self.proposals: list[dict] = []
         self.outbox: list[dict] = []
         self.messages: deque[dict] = deque(maxlen=40)
@@ -292,7 +295,18 @@ class Brain:
         if len(telemetry.get("blocks", [])) > 1200 or len(telemetry.get("entities", [])) > 128:
             raise ValueError("Game telemetry exceeds viewport item limits")
         with self.lock:
-            self.game_snapshot = telemetry
+            previous = self.game_snapshot if (
+                self.game_snapshot.get("companion_id") == telemetry.get("companion_id")
+            ) else {}
+            # Fast pose packets do not re-enumerate the world every time.
+            # Retain slower blocks/entity snapshots until another scan arrives.
+            self.game_snapshot = {**previous, **telemetry}
+            if "frame_png_base64" in telemetry:
+                self.game_frame = {k: telemetry[k] for k in (
+                    "frame_png_base64", "frame_kind", "frame_width", "frame_height"
+                ) if k in telemetry}
+                self.game_frame["frame_timestamp_ms"] = telemetry.get("timestamp_ms", int(time.time()*1000))
+                self.game_frame_at = time.monotonic()
             self.last_seen = time.time()
             if self.config["modules"]["perception"]:
                 item = {
@@ -309,6 +323,77 @@ class Brain:
                 self.observations.append(item)
             self.event("perception", "Received companion telemetry")
         return {"accepted": True, "protocol": "mccp-game-v1"}
+
+    def set_preview(self, patch: dict) -> dict:
+        """Validated runtime preview settings shared by the mod and viewer."""
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("Preview settings must be a non-empty object")
+        with self.lock:
+            current = dict(self.config["preview"])
+            if set(patch) - {"backend", "width", "height", "fps"}:
+                raise ValueError("Unknown preview setting")
+            candidate = {**current, **patch}
+            if candidate["backend"] not in ("cpu", "gpu"):
+                raise ValueError("Preview backend must be cpu or gpu")
+            if type(candidate["width"]) is not int or candidate["width"] not in (48, 64, 80, 96, 128):
+                raise ValueError("Width must be 48, 64, 80, 96 or 128")
+            expected_height = candidate["width"] * 9 // 16
+            if type(candidate["height"]) is not int or candidate["height"] != expected_height:
+                raise ValueError("Height must match a 16:9 preset")
+            if type(candidate["fps"]) is not int or not 1 <= candidate["fps"] <= 8:
+                raise ValueError("Preview FPS must be between 1 and 8")
+            if candidate["backend"] == "cpu" and candidate["fps"] > 3:
+                raise ValueError("CPU raycasting is limited to 3 FPS; select GPU for higher rates")
+            self.config["preview"] = candidate
+            self.save()
+            self.event("settings", "Preview: " + str(candidate))
+            return dict(candidate)
+
+    def ingest_frame(self, frame: dict) -> dict:
+        """Receive GPU client-rendered frame separate from server-side telemetry."""
+        if not isinstance(frame, dict) or frame.get("protocol") != "mccp-frame-v1":
+            raise ValueError("Unsupported preview frame protocol")
+        with self.lock:
+            preview = self.config["preview"]
+            if preview["backend"] != "gpu":
+                raise ValueError("GPU backend is not selected")
+            if frame.get("frame_kind") != "gpu_voxel_shader_png":
+                raise ValueError("Unsupported GPU preview image type")
+            if frame.get("frame_width") != preview["width"] or frame.get("frame_height") != preview["height"]:
+                raise ValueError("Preview dimensions differ from configured settings")
+            encoded = frame.get("frame_png_base64")
+            if not isinstance(encoded, str) or len(encoded) > 600000:
+                raise ValueError("Invalid or oversized PNG")
+            import base64
+            try:
+                png = base64.b64decode(encoded, validate=True)
+            except (ValueError, base64.binascii.Error):
+                raise ValueError("Invalid base64 frame")
+            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("GPU preview frame is not a PNG")
+            if self.game_snapshot and str(frame.get("companion_id", "")) != str(self.game_snapshot.get("companion_id", "")):
+                raise ValueError("Frame does not belong to active companion")
+            self.game_frame = {key: frame[key] for key in (
+                "frame_kind", "frame_width", "frame_height", "frame_png_base64"
+            )}
+            self.game_frame["frame_timestamp_ms"] = int(time.time()*1000)
+            self.game_frame_at = time.monotonic()
+            return {"accepted": True, "bytes": len(png)}
+
+    def current_game_state(self) -> dict:
+        with self.lock:
+            result = dict(self.game_snapshot) if self.game_snapshot else {
+                "protocol": "mccp-game-v1", "connected": False
+            }
+            if self.game_frame and time.monotonic() - self.game_frame_at < 10:
+                # GPU output is independent of world-scan frequency.
+                # On CPU, keep the last preview between sparse telemetry packets.
+                if self.config["preview"]["backend"] == "gpu" or (
+                    "frame_png_base64" not in result
+                ):
+                    result.update(self.game_frame)
+            result["preview_config"] = dict(self.config["preview"])
+            return result
 
     def propose(self, kind: str, arguments: dict) -> dict:
         if kind not in ALLOWED_ACTIONS or not isinstance(arguments, dict):
@@ -495,7 +580,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_body(self):
         length = int(self.headers.get("Content-Length", "0"))
-        limit = 1048576 if self.path.startswith("/api/v1/game/telemetry") else 65536
+        limit = 1048576 if (self.path.startswith("/api/v1/game/telemetry")
+                            or self.path.startswith("/api/v1/game/frame")) else 65536
         if length < 1 or length > limit:
             raise ValueError("Request body exceeds endpoint size limit")
         return json.loads(self.rfile.read(length))
@@ -509,9 +595,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/state":
             return self.json_response(200, self.brain.snapshot())
         if path == "/api/v1/game/state":
+            return self.json_response(200, self.brain.current_game_state())
+        if path == "/api/v1/game/preview/config":
             with self.brain.lock:
-                return self.json_response(200, dict(self.brain.game_snapshot) if
-                    self.brain.game_snapshot else {"protocol": "mccp-game-v1", "connected": False})
+                return self.json_response(200, dict(self.brain.config["preview"]))
         if path == "/api/v1/events":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             try:
@@ -537,6 +624,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.brain.observe(data)
             elif path == "/api/v1/game/telemetry":
                 result = self.brain.ingest_game(data)
+            elif path == "/api/v1/game/frame":
+                result = self.brain.ingest_frame(data)
+            elif path == "/api/v1/game/preview/config":
+                result = self.brain.set_preview(data)
             elif path == "/api/v1/goals":
                 result = self.brain.add_goal(data.get("text", ""))
             elif path == "/api/v1/goals/status":

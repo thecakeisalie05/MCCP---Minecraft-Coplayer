@@ -97,3 +97,15 @@ The viewer also includes incremental step controls (forward/back/strafe, turn, j
 ### Viewer telemetry recovery (v0.2.1-alpha)
 
 If the companion appears and speaks in Minecraft but MCCP-Viewer shows no position or camera, the Viewer now displays the **actual API error**, detects an outdated background brain on port 8765, and retries failed refreshes. Download **both** updated Windows executables, choose **Restart Brain** in the MCCP dashboard (or stop leftover MCCP.exe processes after closing its windows), and launch the updated viewer. The mod jar may stay installed if it is already spawning and speaking. If the viewer says **BRAIN CONNECTED / Waiting for companion telemetry**, inspect Minecraft's `latest.log` for `MCCP bridge unavailable` and `telemetry capture failed`; the network and camera paths are separately diagnosable.
+
+## GPU/CPU preview controls (v0.2.2 alpha)
+
+The viewer provides independent **renderer**, **resolution** and **FPS** controls:
+
+- CPU (default): semantic per-pixel server raycasting. At most 3 FPS; expensive frames cause adaptive short-term throttling.
+- GPU (experimental): a real GLSL 3.30 vertex+fragment program uploaded to your **Minecraft client GPU** at run time. The mod samples a bounded 32×24×32 nearby block-color occupancy volume approximately every 1.5 seconds, uploads it as an OpenGL 3D texture, and draws the companion's view into a small offscreen framebuffer. The GPU pixel output is read back, PNG-encoded on a worker thread and posted to the brain. **This is a voxel visualization, not Minecraft's actual textured scene**, and does not show entities, shaders or particles.
+- Resolution options: 48×27, 64×36, 80×45, 96×54, 128×72 pixels.
+- FPS: 1–3 in CPU mode, 1–8 in GPU mode. The viewer fetches frames at up to ~8 updates/s. FPS values are *targets*, dependent on Minecraft rendering and the host load.
+- Full block/entity telemetry stays on a slower 2-second cadence, while pose/stats are sampled at roughly 5 Hz.
+
+Run **both updated desktop executables and the new Forge JAR**. Preview configuration is stored by the MCCP daemon and read by the server and client modules independently every few seconds; there is no new port. The GPU setting is opt-in. If you see an OpenGL shader failure in `latest.log`, choose CPU mode. GPU rendering requires the Minecraft client (not a headless dedicated server). This implementation has been CI compiled but requires manual validation with GTE, Embeddium, Oculus and the target GPU; offscreen OpenGL state can interact with rendering mods.

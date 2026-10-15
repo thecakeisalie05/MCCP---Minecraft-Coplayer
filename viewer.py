@@ -15,7 +15,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from mccp import api, APP_VERSION
 
-POLL_SECONDS = 1.0
+POLL_SECONDS = 0.12
 WORLD_ACTIONS = {"spawn", "despawn", "move_to", "look_at", "follow",
                  "move_relative", "turn_by", "jump"}
 
@@ -32,6 +32,11 @@ class Viewer:
         self.last_frame = None
         self.last_timestamp = None
         self.last_refresh_error = None
+        self.preview_loaded = False
+        self.frame_tick = None
+        self.preview_backend = tk.StringVar(value="cpu")
+        self.preview_width = tk.StringVar(value="64 × 36")
+        self.preview_fps = tk.StringVar(value="2")
         self.policy = tk.BooleanVar(value=False)
         self.auto_follow = tk.StringVar(value="")
         self.status = tk.StringVar(value="Connecting to local MCCP brain...")
@@ -68,6 +73,22 @@ class Viewer:
         split.add(left, weight=2)
         split.add(right, weight=3)
         ttk.Label(left, text="Companion perspective", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        settings = ttk.Frame(left)
+        settings.pack(fill="x", pady=(5, 3))
+        ttk.Label(settings, text="Renderer").grid(row=0, column=0, sticky="w")
+        ttk.Label(settings, text="Resolution").grid(row=0, column=1, sticky="w")
+        ttk.Label(settings, text="FPS").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(settings, textvariable=self.preview_backend, state="readonly",
+                     values=("cpu", "gpu"), width=8).grid(row=1, column=0, padx=(0, 8))
+        ttk.Combobox(settings, textvariable=self.preview_width, state="readonly",
+                     values=("48 × 27", "64 × 36", "80 × 45", "96 × 54", "128 × 72"),
+                     width=11).grid(row=1, column=1, padx=(0, 8))
+        ttk.Combobox(settings, textvariable=self.preview_fps, state="readonly",
+                     values=tuple(str(i) for i in range(1, 9)),
+                     width=5).grid(row=1, column=2, padx=(0, 8))
+        ttk.Button(settings, text="Apply", command=self.apply_preview).grid(row=1, column=3)
+        ttk.Label(left, text="GPU = experimental voxel shader (not Minecraft's textured camera).",
+                  font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 3))
         self.frame_label = ttk.Label(left, text="No companion image received.", anchor="center",
                                      width=54)
         self.frame_label.pack(fill="x", pady=12, ipady=75)
@@ -158,6 +179,23 @@ class Viewer:
                 error_text = str(error)
                 self.root.after(0, lambda msg=error_text: after(None, msg))
         threading.Thread(target=thread, daemon=True).start()
+
+    def apply_preview(self):
+        try:
+            width, height = (int(p.strip()) for p in self.preview_width.get().split("×"))
+            backend = self.preview_backend.get()
+            fps = int(self.preview_fps.get())
+        except (ValueError, TypeError):
+            messagebox.showerror("Preview", "Select a valid resolution and frame rate.")
+            return
+        self.background(
+            lambda: api("POST", "/api/v1/game/preview/config",
+                        {"backend": backend, "width": width, "height": height, "fps": fps},
+                        timeout=3),
+            lambda result, error: self.log(
+                "Preview settings failed: " + error if error else
+                "Preview configured: %s %dx%d @ %d FPS" % (backend, width, height, fps))
+        )
 
     def change_policy(self):
         checked = self.policy.get()
@@ -271,6 +309,12 @@ class Viewer:
             len(entities), len(items)))
         self.frame_kind.configure(text="Frame: " + state.get("frame_kind", "none") +
                                   " | Not a GPU screenshot")
+        cfg = state.get("preview_config") or {}
+        if cfg and not self.preview_loaded:
+            self.preview_loaded = True
+            self.preview_backend.set(cfg.get("backend", "cpu"))
+            self.preview_width.set("%d × %d" % (cfg.get("width", 64), cfg.get("height", 36)))
+            self.preview_fps.set(str(cfg.get("fps", 2)))
         stamp = state.get("timestamp_ms")
         if stamp != self.last_timestamp:
             self.last_timestamp = stamp
@@ -283,15 +327,20 @@ class Viewer:
                 view = self.views[name]
                 view.delete("1.0", "end")
                 view.insert("end", json.dumps(content, indent=2, ensure_ascii=False))
-            frame = state.get("frame_png_base64")
-            if frame and frame != self.last_frame:
-                try:
-                    native = tk.PhotoImage(data=frame, format="png")
-                    self.image = native.zoom(8, 8)
-                    self.frame_label.configure(image=self.image, text="")
-                    self.last_frame = frame
-                except tk.TclError as error:
-                    self.frame_label.configure(text="PNG decode failed: " + str(error), image="")
+        # GPU images can arrive independently between slower world-scan snapshots.
+        frame = state.get("frame_png_base64")
+        frame_tick = state.get("frame_timestamp_ms", stamp)
+        if frame and (frame_tick != self.frame_tick or frame != self.last_frame):
+            try:
+                native = tk.PhotoImage(data=frame, format="png")
+                width = max(1, int(state.get("frame_width", native.width())))
+                factor = max(1, min(10, 460 // width))
+                self.image = native.zoom(factor, factor)
+                self.frame_label.configure(image=self.image, text="")
+                self.last_frame = frame
+                self.frame_tick = frame_tick
+            except tk.TclError as error:
+                self.frame_label.configure(text="PNG decode failed: " + str(error), image="")
 
     def run(self):
         self.root.mainloop()

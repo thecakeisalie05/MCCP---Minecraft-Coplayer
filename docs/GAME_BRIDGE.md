@@ -92,3 +92,19 @@ The game mod POSTs JSON to /api/v1/game/telemetry about every 40 server ticks. G
 7. Inspect errors and TPS before trying in a production modpack.
 
 The above are acceptance tests to perform, not claims that the mod has already been tested in GTE.
+
+## Preview config, rendering and transport
+
+Authenticated GET/POST `/api/v1/game/preview/config` accepts:
+
+```json
+{"backend":"gpu","width":80,"height":45,"fps":4}
+```
+
+The accepted backend is `cpu` or `gpu`; widths 48, 64, 80, 96, 128 have matching 16:9 heights; CPU is limited to 3 FPS; GPU is limited to 8 FPS. MCCP persists the selection and validates inputs.
+
+Independent authenticated POST `/api/v1/game/frame` accepts `mccp-frame-v1` with `companion_id`, `frame_kind=gpu_voxel_shader_png`, dimensions and `frame_png_base64`. The brain combines the newest frame and server observation for GET `/api/v1/game/state`. Camera updates no longer require repeating the large block/entity scan.
+
+The optional client renderer uses two GLSL files in `assets/mccp/shaders/`: `voxel.vert` (fullscreen triangle) and `voxel.frag` (volumetric ray marching). OpenGL 3.3 uses a 32×24×32 RGBA8 occupancy texture and an offscreen framebuffer. The result is a simplified color-coded block scene, not a faithful second Minecraft camera; transparent blocks are currently treated as solid. Shader compilation and framebuffer errors log a warning and disable GPU capture briefly; CPU mode remains selectable. GPU readback and Java-side voxel sampling still cost CPU/render time, even when ray evaluation occurs on the GPU. Benchmark before increasing FPS in heavy modpacks.
+
+`frame_kind=semantic_raycast_png` remains the CPU fallback. If GPU is configured but the client cannot render, live pose/stats and block samples are unaffected, while the camera remains pending. The protocol's `frame_kind` differentiates capture providers for future fully textured cameras.

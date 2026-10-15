@@ -181,6 +181,37 @@ class BrainTests(unittest.TestCase):
                 self.brain.ollama("Hi")
         self.assertEqual(len(self.brain.messages), 0)
 
+    def test_preview_presets_validation_and_persistence(self):
+        self.assertEqual(self.brain.set_preview({
+            "backend":"cpu", "width":64, "height":36, "fps":2
+        })["fps"], 2)
+        with self.assertRaises(ValueError):
+            self.brain.set_preview({"width":80, "height":36})
+        with self.assertRaises(ValueError):
+            self.brain.set_preview({"fps":8})
+        with self.assertRaises(ValueError):
+            self.brain.set_preview({"backend":"none"})
+        self.brain.set_preview({"backend":"gpu", "fps":8})
+        self.assertEqual(mccp.Brain().config["preview"]["fps"], 8)
+
+    def test_gpu_frame_requires_matching_companion_and_png(self):
+        self.brain.set_preview({"backend":"gpu"})
+        self.brain.ingest_game({"protocol":"mccp-game-v1",
+            "companion_id":"avatar1", "pose":{"x":0,"y":70,"z":0}, "inventory":[]})
+        import base64
+        image = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"fakedata").decode()
+        frame = {"protocol":"mccp-frame-v1","companion_id":"avatar1",
+            "frame_kind":"gpu_voxel_shader_png", "frame_width":64,
+            "frame_height":36, "frame_png_base64":image}
+        self.assertTrue(self.brain.ingest_frame(frame)["accepted"])
+        state = self.brain.current_game_state()
+        self.assertEqual(state["frame_kind"], "gpu_voxel_shader_png")
+        self.assertEqual(state["preview_config"]["fps"], 2)
+        with self.assertRaises(ValueError):
+            self.brain.ingest_frame({**frame,"companion_id":"wrong"})
+        with self.assertRaises(ValueError):
+            self.brain.ingest_frame({**frame,"frame_png_base64":"garbage"})
+
     def test_ingest_game_state_and_summary(self):
         report = {"protocol": "mccp-game-v1",
                   "pose": {"x": 10, "y": 70, "z": -4},
@@ -292,6 +323,12 @@ class APITests(BrainTests):
         commands = self.request("POST", "/api/v1/commands/poll", {})["commands"]
         self.assertEqual(commands[0]["kind"], "follow")
         self.assertTrue(self.request("GET", "/api/v1/state")["connected"])
+
+    def test_preview_settings_http(self):
+        cfg = self.request("POST", "/api/v1/game/preview/config",
+            {"backend":"gpu","width":80,"height":45,"fps":4})
+        self.assertEqual(cfg["fps"], 4)
+        self.assertEqual(self.request("GET", "/api/v1/game/preview/config")["width"], 80)
 
     def test_game_bridge_http_flow(self):
         telemetry = {

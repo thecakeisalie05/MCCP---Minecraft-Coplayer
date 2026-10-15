@@ -32,11 +32,18 @@ public final class Observer {
     private static final int RADIUS = 12;
     private static final int MAX_BLOCKS = 1200;
     private static final int MAX_ENTITIES = 128;
-    private static final int WIDTH = 48;
-    private static final int HEIGHT = 27;
+    private static final int DEFAULT_WIDTH = 64;
+    private static final int DEFAULT_HEIGHT = 36;
     private Observer() {}
 
     public static JsonObject capture(CompanionEntity avatar, boolean includeEnvironment) {
+        return capture(avatar, includeEnvironment, DEFAULT_WIDTH, DEFAULT_HEIGHT, includeEnvironment);
+    }
+
+    public static JsonObject capture(CompanionEntity avatar, boolean includeEnvironment,
+                                      int width, int height, boolean includeFrame) {
+        width = Math.max(48, Math.min(128, width));
+        height = Math.max(27, Math.min(72, height));
         ServerLevel level = (ServerLevel) avatar.level();
         JsonObject root = new JsonObject();
         root.addProperty("protocol", "mccp-game-v1");
@@ -90,14 +97,17 @@ public final class Observer {
             inventory.add(item);
         }
         root.add("inventory", inventory);
-        root.addProperty("frame_kind", "semantic_raycast_png");
-        root.addProperty("frame_width", WIDTH);
-        root.addProperty("frame_height", HEIGHT);
+        root.addProperty("frame_kind", includeFrame ? "semantic_raycast_png" : "unavailable");
+        root.addProperty("frame_width", width);
+        root.addProperty("frame_height", height);
         if (includeEnvironment) {
             root.add("entities", entities(level, avatar, look));
             root.add("blocks", blocks(level, avatar, look, root));
+        }
+        if (includeFrame) {
             try {
-                root.addProperty("frame_png_base64", renderFrame(level, avatar, look));
+                root.addProperty("frame_png_base64", renderFrame(level, avatar, look, width, height));
+                root.addProperty("frame_timestamp_ms", System.currentTimeMillis());
             } catch (IOException exception) {
                 root.addProperty("frame_error", exception.getClass().getSimpleName());
             }
@@ -178,18 +188,19 @@ public final class Observer {
         return array;
     }
 
-    private static String renderFrame(ServerLevel level, CompanionEntity avatar, Vec3 forward) throws IOException {
-        BufferedImage image = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_RGB);
+    private static String renderFrame(ServerLevel level, CompanionEntity avatar, Vec3 forward,
+                                      int width, int height) throws IOException {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         Vec3 right = new Vec3(-forward.z, 0, forward.x).normalize();
         if (right.lengthSqr() < 0.001) right = new Vec3(1, 0, 0);
         Vec3 up = right.cross(forward).normalize();
         double tanHalfVerticalFov = Math.tan(Math.toRadians(70) / 2);
-        double aspect = (double) WIDTH / HEIGHT;
+        double aspect = (double) width / height;
         Vec3 eye = avatar.getEyePosition();
-        for (int y = 0; y < HEIGHT; y++) {
-            for (int x = 0; x < WIDTH; x++) {
-                double sx = (2.0 * (x + 0.5) / WIDTH - 1.0) * aspect * tanHalfVerticalFov;
-                double sy = (1.0 - 2.0 * (y + 0.5) / HEIGHT) * tanHalfVerticalFov;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                double sx = (2.0 * (x + 0.5) / width - 1.0) * aspect * tanHalfVerticalFov;
+                double sy = (1.0 - 2.0 * (y + 0.5) / height) * tanHalfVerticalFov;
                 Vec3 ray = forward.add(right.scale(sx)).add(up.scale(sy)).normalize();
                 BlockHitResult hit = level.clip(new ClipContext(
                     eye, eye.add(ray.scale(24)), ClipContext.Block.COLLIDER,

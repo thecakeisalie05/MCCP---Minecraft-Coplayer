@@ -32,6 +32,10 @@ public final class Bridge {
     private static final AtomicBoolean SENDING = new AtomicBoolean(false);
     private static long ticks;
     private static int failures;
+    private record PreviewConfig(String backend, int width, int height, int fps) {}
+    private static volatile PreviewConfig preview = new PreviewConfig("cpu", 64, 36, 2);
+    private static long lastCpuFrameTick;
+    private static long throttleCpuUntil;
 
     private Bridge() {}
 
@@ -77,25 +81,60 @@ public final class Bridge {
 
     public static void tick(MinecraftServer server) {
         ticks++;
-        if (ticks % 5 == 0) poll(server); // 4Hz command polling while world active
-        if (ticks % 40 == 0) { // 0.5Hz heavy perception: bounded raycast, nearby blocks
-            CompanionEntity companion = findCompanion(server);
-            if (companion != null) {
-                try {
-                    sendTelemetry(Observer.capture(companion, true));
-                } catch (RuntimeException problem) {
-                    LOG.warn("MCCP telemetry capture failed; retrying pose-only: {}", problem.toString(), problem);
-                    try {
-                        JsonObject basic = Observer.capture(companion, false);
-                        basic.addProperty("frame_kind", "unavailable");
-                        basic.addProperty("frame_error", problem.getClass().getSimpleName());
-                        sendTelemetry(basic);
-                    } catch (RuntimeException basicFailure) {
-                        LOG.error("MCCP pose-only telemetry also failed", basicFailure);
-                    }
-                }
+        if (ticks % 5 == 0) poll(server);
+        if (ticks % 100 == 1) refreshPreview();
+        // Pose/stats = 5Hz; heavy block scan = 0.5Hz; camera = configured FPS.
+        // Never do network IO synchronously on the server tick thread.
+        if (ticks % 4 != 0) return;
+        CompanionEntity companion = findCompanion(server);
+        if (companion == null) return;
+        PreviewConfig settings = preview;
+        boolean environment = ticks % 40 == 0;
+        int framePeriod = Math.max(1, Math.round(20f / settings.fps()));
+        boolean frame = settings.backend().equals("cpu")
+            && ticks >= throttleCpuUntil && ticks - lastCpuFrameTick >= framePeriod;
+        if (frame) lastCpuFrameTick = ticks;
+        long start = System.nanoTime();
+        try {
+            sendTelemetry(Observer.capture(companion, environment,
+                settings.width(), settings.height(), frame));
+        } catch (RuntimeException problem) {
+            LOG.warn("MCCP telemetry capture failed; retrying pose-only: {}", problem.toString(), problem);
+            try {
+                JsonObject basic = Observer.capture(companion, false,
+                    settings.width(), settings.height(), false);
+                basic.addProperty("frame_error", problem.getClass().getSimpleName());
+                sendTelemetry(basic);
+            } catch (RuntimeException basicFailure) {
+                LOG.error("MCCP pose-only telemetry also failed", basicFailure);
+            }
+        } finally {
+            long elapsedMs = (System.nanoTime() - start) / 1000000L;
+            if (frame && elapsedMs >= 35L) {
+                // Skip a few frames following an unexpectedly expensive capture,
+                // rather than continuously degrading the Minecraft server TPS.
+                throttleCpuUntil = ticks + 20;
+                LOG.warn("MCCP CPU preview took {} ms. Temporarily throttling camera.", elapsedMs);
             }
         }
+    }
+
+    private static void refreshPreview() {
+        getLocal("/api/v1/game/preview/config").thenAccept(raw -> {
+            try {
+                JsonObject cfg = JsonParser.parseString(raw).getAsJsonObject();
+                String mode = cfg.get("backend").getAsString();
+                int width = cfg.get("width").getAsInt();
+                int height = cfg.get("height").getAsInt();
+                int fps = cfg.get("fps").getAsInt();
+                if (!(mode.equals("cpu") || mode.equals("gpu"))
+                        || width < 48 || width > 128 || height != width * 9 / 16
+                        || fps < 1 || fps > 8) return;
+                preview = new PreviewConfig(mode, width, height, fps);
+            } catch (RuntimeException ex) {
+                LOG.warn("Invalid MCCP preview configuration from brain: {}", ex.toString());
+            }
+        }).exceptionally(err -> null); // Brain may be offline on startup.
     }
 
     private static String token() {
@@ -142,6 +181,27 @@ public final class Bridge {
                 }
                 return response.body();
             });
+    }
+
+    public static CompletableFuture<String> getLocal(String path) {
+        String secret = token();
+        if (secret == null || secret.isBlank())
+            return CompletableFuture.failedFuture(new IOException("MCCP token unavailable"));
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(apiBase() + path))
+            .timeout(Duration.ofSeconds(3))
+            .header("X-MCCP-Token", secret)
+            .GET().build();
+        return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .thenApply(response -> {
+                if (response.statusCode() != 200)
+                    throw new IllegalStateException("MCCP HTTP " + response.statusCode());
+                return response.body();
+            });
+    }
+
+    public static CompletableFuture<String> postLocal(String path, String body) {
+        return post(path, body);
     }
 
     private static void warn(Throwable exception) {
