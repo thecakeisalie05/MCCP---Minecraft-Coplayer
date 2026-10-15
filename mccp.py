@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 API_VERSION = "v1"
+APP_VERSION = "0.1.4"
 PORT = int(os.environ.get("MCCP_PORT", "8765"))
 HOST = "127.0.0.1"
 
@@ -130,7 +131,8 @@ class Brain:
         with self.lock:
             last_seen_seconds = round(time.time() - self.last_seen, 1) if self.last_seen else None
             return {
-                "api_version": API_VERSION, "running": True, "paused": self.paused,
+                "api_version": API_VERSION, "app_version": APP_VERSION,
+                "running": True, "paused": self.paused,
                 "connected": bool(self.last_seen and time.time() - self.last_seen < 15),
                 "last_seen_seconds": last_seen_seconds,
                 "config": json.loads(json.dumps(self.config)),
@@ -353,7 +355,13 @@ class Brain:
                 )
             if result.get("done_reason") == "length":
                 raise RuntimeError("Ollama hit its response token limit before producing text.")
-            raise RuntimeError("Ollama returned an empty response; check the model and Ollama logs.")
+            raise RuntimeError(
+                "Ollama returned no visible text (model=" + str(model) +
+                ", done_reason=" + str(result.get("done_reason", "unknown"))[:80] +
+                ", output_tokens=" + str(result.get("eval_count", "unknown"))[:32] +
+                ", thinking_chars=" + str(len(message.get("thinking") or "")) +
+                "). Check your Ollama version and run the API diagnostic."
+            )
         with self.lock:
             self.messages.append({"role": "user", "text": prompt[:1000]})
             self.messages.append({"role": "assistant", "text": reply[:6000]})
@@ -400,7 +408,7 @@ class Brain:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MCCP/0.1.2"
+    server_version = "MCCP/" + APP_VERSION
     brain: Brain
     token: str
 
@@ -431,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/health":
-            return self.json_response(200, {"ok": True, "service": "mccp-brain", "version": "0.1.2"})
+            return self.json_response(200, {"ok": True, "service": "mccp-brain", "version": APP_VERSION})
         if not self.authorized():
             return
         if path == "/api/v1/state":
@@ -544,12 +552,27 @@ def daemon_command() -> list[str]:
     return [sys.executable, str(Path(__file__).resolve()), "--daemon"]
 
 
+def daemon_health():
+    """Identify the process listening on the local MCCP port."""
+    return api("GET", "/health", timeout=0.5)
+
+
+def daemon_is_current(health: dict) -> bool:
+    return (isinstance(health, dict) and health.get("service") == "mccp-brain"
+            and health.get("version") == APP_VERSION)
+
+
 def start_daemon() -> None:
     try:
-        api("GET", "/health", timeout=0.3)
+        health = daemon_health()
+    except (OSError, RuntimeError, ValueError, TimeoutError):
+        health = None
+    if health is not None:
+        if health.get("service") != "mccp-brain":
+            raise RuntimeError("Port " + str(PORT) + " is occupied by another service.")
+        # Do not implicitly restart a process that may be working on a goal.
+        # The GUI will warn and offer an explicit restart.
         return
-    except Exception:
-        pass
     kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
               "stderr": subprocess.DEVNULL}
     if os.name == "nt":
@@ -559,13 +582,44 @@ def start_daemon() -> None:
     subprocess.Popen(daemon_command(), **kwargs)
 
 
+def restart_daemon() -> None:
+    """Explicitly replace an old daemon without touching unrelated processes."""
+    try:
+        health = daemon_health()
+    except (OSError, RuntimeError, ValueError, TimeoutError):
+        health = None
+    if health is not None:
+        if health.get("service") != "mccp-brain":
+            raise RuntimeError("Port " + str(PORT) + " belongs to another service.")
+        try:
+            api("POST", "/api/v1/control", {"operation": "shutdown"}, timeout=2)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not stop the old brain via API. Close MCCP, then stop only "
+                "the leftover MCCP.exe processes in Task Manager and relaunch. " + str(exc)
+            )
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            try:
+                daemon_health()
+            except (OSError, RuntimeError, ValueError, TimeoutError):
+                break
+        else:
+            raise RuntimeError(
+                "Previous daemon has not exited. Close MCCP, terminate leftover "
+                "MCCP.exe processes in Task Manager, then relaunch."
+            )
+    start_daemon()
+
+
 def launch_gui() -> None:
     import tkinter as tk
     from tkinter import messagebox, ttk
 
     start_daemon()
     root = tk.Tk()
-    root.title("MCCP | Minecraft Coplayer Brain")
+    root.title("MCCP v" + APP_VERSION + " | Minecraft Coplayer Brain")
     root.geometry("1110x760")
     root.minsize(880, 620)
     root.configure(bg="#101820")
@@ -611,14 +665,26 @@ def launch_gui() -> None:
         return api("POST", "/api/v1/" + path, body, timeout=55 if path == "message" else 3)
 
     def start_clicked():
-        start_daemon()
+        action(start_daemon)
         root.after(800, refresh)
+
+    def restart_clicked():
+        if not messagebox.askyesno(
+            "Restart MCCP brain",
+            "Restart the background brain process? Any active planning will stop."
+        ):
+            return
+        if action(restart_daemon) is None:
+            # restart_daemon returns None on success; refresh in either case.
+            pass
+        root.after(1000, refresh)
 
     def control(operation):
         action(lambda: post("control", {"operation": operation}))
         refresh()
 
     ttk.Button(toolbar, text="Start / Reconnect", command=start_clicked).pack(side="left", padx=4)
+    ttk.Button(toolbar, text="Restart Brain", command=restart_clicked).pack(side="left", padx=4)
     ttk.Button(toolbar, text="Pause Autonomy", command=lambda: control("pause")).pack(side="left", padx=4)
     ttk.Button(toolbar, text="Resume", command=lambda: control("resume")).pack(side="left", padx=4)
     ttk.Button(toolbar, text="Emergency Stop", command=lambda: control("emergency_stop")).pack(side="left", padx=4)
@@ -675,6 +741,19 @@ def launch_gui() -> None:
     chat_output.pack(fill="both", expand=True, pady=6)
 
     def send_chat():
+        try:
+            health = daemon_health()
+            if not daemon_is_current(health):
+                messagebox.showerror(
+                    "Outdated MCCP brain",
+                    "Desktop v" + APP_VERSION + " is connected to brain v" +
+                    str(health.get("version", "unknown")) +
+                    ". Use Restart Brain to apply the updated code."
+                )
+                return
+        except Exception as exc:
+            messagebox.showerror("MCCP", "Could not verify the brain version: " + str(exc))
+            return
         message = chat_input.get().strip()
         if not message:
             return
@@ -791,9 +870,20 @@ def launch_gui() -> None:
             info_var.set("No brain process is responding. Press Start / Reconnect.")
             refresh_timer[0] = root.after(1600, refresh)
             return
-        status_var.set(("PAUSED" if state["paused"] else "RUNNING") +
-                       ("  •  GAME CONNECTED" if state["connected"] else "  •  GAME OFFLINE"))
-        info_var.set("Model: " + state["config"]["model"] + "   |   Goals: " +
+        try:
+            health = daemon_health()
+        except Exception:
+            health = {}
+        if not daemon_is_current(health):
+            running_version = health.get("version", state.get("app_version", "unknown"))
+            status_var.set("VERSION MISMATCH: brain v" + str(running_version) +
+                           " / desktop v" + APP_VERSION)
+            info_var.set("Old brain process still running. Use Restart Brain before chatting.")
+        else:
+            status_var.set("BRAIN v" + APP_VERSION + "  •  " +
+                           ("PAUSED" if state["paused"] else "RUNNING") +
+                           ("  •  GAME CONNECTED" if state["connected"] else "  •  GAME OFFLINE"))
+            info_var.set("Model: " + state["config"]["model"] + "   |   Goals: " +
                      str(len(state["goals"])) + "   |   Observations: " +
                      str(state["observation_count"]) + "   |   Queued actions: " +
                      str(state["queued_actions"]))

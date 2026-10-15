@@ -120,6 +120,33 @@ class BrainTests(unittest.TestCase):
         self.assertGreater(len(first), 30)
         self.assertEqual(first, mccp.get_or_create_token())
 
+    def test_daemon_version_mismatch_detected(self):
+        self.assertTrue(mccp.daemon_is_current({
+            "ok": True, "service": "mccp-brain", "version": mccp.APP_VERSION
+        }))
+        self.assertFalse(mccp.daemon_is_current({
+            "ok": True, "service": "mccp-brain", "version": "0.1.0"
+        }))
+        self.assertFalse(mccp.daemon_is_current({
+            "ok": True, "service": "other-service", "version": mccp.APP_VERSION
+        }))
+
+    def test_start_daemon_does_not_spawn_again_for_old_brain(self):
+        with mock.patch("mccp.daemon_health", return_value={
+            "service": "mccp-brain", "version": "0.1.0"
+        }), mock.patch("mccp.subprocess.Popen") as spawn:
+            mccp.start_daemon()
+        spawn.assert_not_called()
+
+    def test_empty_ollama_response_diagnostic(self):
+        raw = io.BytesIO(json.dumps({
+            "model": "qwen3:4b", "message": {"content": ""}, "done_reason": "stop",
+            "eval_count": 0
+        }).encode())
+        with mock.patch("mccp.urllib.request.urlopen", return_value=raw):
+            with self.assertRaisesRegex(RuntimeError, "done_reason=stop"):
+                self.brain.ollama("Hello")
+
     def test_model_response_is_grounded_and_recorded(self):
         raw = io.BytesIO(json.dumps({"message": {"content": "I can inspect that once connected."}}).encode())
         with mock.patch("mccp.urllib.request.urlopen", return_value=raw):

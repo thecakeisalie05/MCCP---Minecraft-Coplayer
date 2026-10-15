@@ -12,6 +12,8 @@ The workflow automatically builds a single Windows executable on updates to main
 
 Download MCCP.exe and run it. It launches a localhost-only background daemon. Closing the window does not terminate the daemon. The dashboard offers Start/Reconnect, Pause Autonomy, Resume, Emergency Stop and Stop Brain.
 
+**Upgrading from an earlier alpha:** The brain daemon survives GUI exit. Installing a new executable does not automatically replace a running daemon. v0.1.4 displays the desktop and daemon versions, warns about a mismatch, and offers a **Restart Brain** button that requests a graceful shutdown and relaunch. On much older builds where shutdown is unavailable, close the GUI and terminate only leftover `MCCP.exe` processes in Task Manager before relaunching. Settings and memories are stored separately in `%APPDATA%\\MCCP` and persist. The restart control stops autonomous planning intentionally.
+
 For meaningful AI chat, install [Ollama](https://ollama.com/), run it locally, then pull the model:
 ~~~powershell
 ollama pull qwen3:4b
