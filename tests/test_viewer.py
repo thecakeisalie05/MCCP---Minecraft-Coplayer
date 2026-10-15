@@ -21,6 +21,9 @@ class FakeVar:
     def set(self, value):
         self.value = value
 
+    def configure(self, **kwargs):
+        self.value = kwargs.get("text", self.value)
+
 
 class ViewerTests(unittest.TestCase):
     def test_background_error_callback_captures_exception_text(self):
