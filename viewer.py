@@ -20,15 +20,82 @@ WORLD_ACTIONS = {"spawn", "despawn", "move_to", "look_at", "follow",
                  "move_relative", "turn_by", "jump"}
 
 
+# Charcoal workbench theme: compact, high-contrast and dockable like an IDE.
+PALETTE = {
+    "window": "#0B111B",
+    "panel": "#121D2A",
+    "raised": "#1B2A3B",
+    "field": "#101B28",
+    "border": "#304358",
+    "text": "#E9F1F8",
+    "muted": "#93A7B8",
+    "accent": "#43D2E9",
+    "accent_dark": "#14394A",
+    "warning": "#EDAA76",
+    "danger": "#E78C91",
+}
+
+
+def camera_scale(source_width, source_height, available_width, available_height):
+    """Fit a small pixel-art frame without distortion or fractional scaling."""
+    if min(source_width, source_height, available_width, available_height) <= 0:
+        return 1
+    return max(1, min(12, available_width // source_width, available_height // source_height))
+
+
+class ScrollPanel(ttk.Frame):
+    """The control deck scrolls at all window sizes, independently of the camera."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, bg=PALETTE["panel"], highlightthickness=0, borderwidth=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.content = ttk.Frame(self.canvas, style="Panel.TFrame", padding=(12, 10))
+        self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", self._update_scrollregion)
+        self.canvas.bind("<Configure>", self._resize_width)
+        self.canvas.bind("<Enter>", self._wheel_enter)
+        self.canvas.bind("<Leave>", self._wheel_leave)
+
+    def _update_scrollregion(self, event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _resize_width(self, event):
+        self.canvas.itemconfigure(self.window_id, width=event.width)
+
+    def _wheel_enter(self, event=None):
+        self.canvas.bind_all("<MouseWheel>", self._wheel, add="+")
+        self.canvas.bind_all("<Button-4>", self._wheel_linux, add="+")
+        self.canvas.bind_all("<Button-5>", self._wheel_linux, add="+")
+
+    def _wheel_leave(self, event=None):
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _wheel(self, event):
+        self.canvas.yview_scroll(-int(event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+
+    def _wheel_linux(self, event):
+        self.canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+
+
 class Viewer:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("MCCP Viewer " + APP_VERSION + " | Independent Coplayer")
-        self.root.geometry("1240x830")
-        self.root.minsize(940, 650)
-        self.root.configure(bg="#111b26")
+        self.root.title("MCCP / Companion Workbench")
+        self.root.geometry("1340x830")
+        self.root.minsize(810, 530)
+        self.root.configure(bg=PALETTE["window"])
+        self.root.grid_rowconfigure(2, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
+
         self.busy = False
         self.image = None
+        self.raw_image = None
         self.last_frame = None
         self.last_timestamp = None
         self.last_refresh_error = None
@@ -39,126 +106,352 @@ class Viewer:
         self.preview_fps = tk.StringVar(value="2")
         self.policy = tk.BooleanVar(value=False)
         self.auto_follow = tk.StringVar(value="")
-        self.status = tk.StringVar(value="Connecting to local MCCP brain...")
-        self.pose = tk.StringVar(value="Position: waiting")
-        self.stats = tk.StringVar(value="Health: --   Hunger: --   Dimension: --")
-        self.counts = tk.StringVar(value="Blocks: 0 | Entities: 0 | Inventory: 0")
+        self.status = tk.StringVar(value="CONNECTING TO LOCAL BRAIN")
+        self.pose = tk.StringVar(value="WAITING FOR TELEMETRY")
+        self.stats = tk.StringVar(value="HEALTH --/--   ·   FOOD --   ·   AIR --")
+        self.counts = tk.StringVar(value="BLOCKS 0   ·   ENTITIES 0   ·   ITEMS 0")
         self.x = tk.StringVar(value="0")
         self.y = tk.StringVar(value="65")
         self.z = tk.StringVar(value="0")
         self.message = tk.StringVar(value="Hello! I'm ready to help.")
+
+        self._styles()
+        self._header()
+        self._metrics()
+        self._workspace()
+        self._footer()
+        self.root.after(300, self.refresh)
+
+    def _styles(self):
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure(".", background="#111b26", foreground="#e5eef5", font=("Segoe UI", 10))
-        style.configure("TFrame", background="#111b26")
-        style.configure("TLabel", background="#111b26", foreground="#e5eef5")
-        style.configure("TButton", padding=(10, 7), background="#23415a", foreground="#f1f5fa")
-        style.map("TButton", background=[("active", "#385e79")])
-        style.configure("TEntry", fieldbackground="#203344", foreground="#eff7ff")
-        style.configure("TCheckbutton", background="#111b26", foreground="#e5eef5")
-        style.configure("TNotebook", background="#111b26")
-        style.configure("TNotebook.Tab", background="#1d3244", foreground="#e5eef5", padding=(12, 9))
-        style.map("TNotebook.Tab", background=[("selected", "#315776")])
-        header = ttk.Frame(self.root, padding=14)
-        header.pack(fill="x")
-        ttk.Label(header, text="MCCP  /  COMPANION OBSERVER", font=("Segoe UI", 19, "bold")).pack(side="left")
-        ttk.Label(header, textvariable=self.status).pack(side="right")
-        ttk.Label(self.root, textvariable=self.pose, font=("Consolas", 12)).pack(fill="x", padx=16, pady=2)
-        ttk.Label(self.root, textvariable=self.stats).pack(fill="x", padx=16)
-        ttk.Label(self.root, textvariable=self.counts).pack(fill="x", padx=16, pady=(2, 6))
-        split = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        split.pack(fill="both", expand=True, padx=12, pady=10)
-        left = ttk.Frame(split, padding=8)
-        right = ttk.Frame(split, padding=8)
-        split.add(left, weight=2)
-        split.add(right, weight=3)
-        ttk.Label(left, text="Companion perspective", font=("Segoe UI", 13, "bold")).pack(anchor="w")
-        settings = ttk.Frame(left)
-        settings.pack(fill="x", pady=(5, 3))
-        ttk.Label(settings, text="Renderer").grid(row=0, column=0, sticky="w")
-        ttk.Label(settings, text="Resolution").grid(row=0, column=1, sticky="w")
-        ttk.Label(settings, text="FPS").grid(row=0, column=2, sticky="w")
-        ttk.Combobox(settings, textvariable=self.preview_backend, state="readonly",
-                     values=("cpu", "gpu"), width=8).grid(row=1, column=0, padx=(0, 8))
-        ttk.Combobox(settings, textvariable=self.preview_width, state="readonly",
-                     values=("48 × 27", "64 × 36", "80 × 45", "96 × 54", "128 × 72"),
-                     width=11).grid(row=1, column=1, padx=(0, 8))
-        ttk.Combobox(settings, textvariable=self.preview_fps, state="readonly",
-                     values=tuple(str(i) for i in range(1, 9)),
-                     width=5).grid(row=1, column=2, padx=(0, 8))
-        ttk.Button(settings, text="Apply", command=self.apply_preview).grid(row=1, column=3)
-        ttk.Label(left, text="GPU = experimental voxel shader (not Minecraft's textured camera).",
-                  font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 3))
-        self.frame_label = ttk.Label(left, text="No companion image received.", anchor="center",
-                                     width=54)
-        self.frame_label.pack(fill="x", pady=12, ipady=75)
-        self.frame_kind = ttk.Label(left, text="Frame type: --")
-        self.frame_kind.pack(anchor="w", pady=(0, 12))
-        ttk.Label(left, text="Manual controls", font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=5)
-        ttk.Checkbutton(left, variable=self.policy, text="Enable approved world-changing commands",
-                        command=self.change_policy).pack(anchor="w", pady=(4, 10))
-        row = ttk.Frame(left)
-        row.pack(fill="x", pady=4)
-        for label, kind in (("Spawn", "spawn"), ("Despawn", "despawn"),
-                            ("Stop", "stop")):
-            ttk.Button(row, text=label, command=lambda k=kind: self.send(k, {})).pack(side="left", padx=3)
-        steer = ttk.Frame(left)
-        steer.pack(fill="x", pady=6)
-        ttk.Label(steer, text="Step controls:").grid(row=0, column=0, columnspan=5, sticky="w")
-        buttons = (
-            (1, 0, "Turn left", "turn_by", {"degrees": -30}),
-            (1, 1, "Forward", "move_relative", {"forward": 1, "blocks": 2}),
-            (1, 2, "Jump", "jump", {}),
-            (1, 3, "Turn right", "turn_by", {"degrees": 30}),
-            (2, 0, "Left", "move_relative", {"strafe": -1, "blocks": 2}),
-            (2, 1, "Back", "move_relative", {"forward": -1, "blocks": 2}),
-            (2, 2, "Right", "move_relative", {"strafe": 1, "blocks": 2}),
+        style.configure(".", font=("Segoe UI", 10), background=PALETTE["window"],
+                        foreground=PALETTE["text"])
+        style.configure("TFrame", background=PALETTE["window"])
+        style.configure("Panel.TFrame", background=PALETTE["panel"])
+        style.configure("Raised.TFrame", background=PALETTE["raised"])
+        style.configure("TLabel", background=PALETTE["window"], foreground=PALETTE["text"])
+        style.configure("Panel.TLabel", background=PALETTE["panel"], foreground=PALETTE["text"])
+        style.configure("Muted.TLabel", background=PALETTE["panel"], foreground=PALETTE["muted"])
+        style.configure("Caption.TLabel", background=PALETTE["window"], foreground=PALETTE["muted"])
+        style.configure("Brand.TLabel", background=PALETTE["window"],
+                        foreground=PALETTE["text"], font=("Segoe UI Semibold", 17))
+        style.configure("Status.TLabel", background=PALETTE["window"],
+                        foreground=PALETTE["accent"], font=("Consolas", 10))
+        style.configure("Metric.TLabel", background=PALETTE["panel"],
+                        foreground=PALETTE["text"], font=("Consolas", 10))
+        style.configure("Heading.TLabel", background=PALETTE["panel"],
+                        foreground=PALETTE["text"], font=("Segoe UI Semibold", 11))
+        style.configure("TButton", background=PALETTE["raised"],
+                        foreground=PALETTE["text"], padding=(10, 6), relief="flat",
+                        borderwidth=0)
+        style.map("TButton",
+                  background=[("disabled", PALETTE["panel"]), ("active", PALETTE["border"])],
+                  foreground=[("disabled", PALETTE["muted"])])
+        style.configure("Accent.TButton", background=PALETTE["accent_dark"],
+                        foreground=PALETTE["accent"], padding=(10, 7),
+                        relief="flat", borderwidth=0)
+        style.map("Accent.TButton", background=[("active", "#24566A")])
+        style.configure("Danger.TButton", background="#422934",
+                        foreground="#FFB5BB", padding=(10, 7), relief="flat",
+                        borderwidth=0)
+        style.map("Danger.TButton", background=[("active", "#5B3440")])
+        style.configure("TEntry", fieldbackground=PALETTE["field"],
+                        foreground=PALETTE["text"], insertcolor=PALETTE["text"],
+                        padding=5, bordercolor=PALETTE["border"])
+        style.configure("TCombobox", fieldbackground=PALETTE["field"],
+                        foreground=PALETTE["text"], arrowcolor=PALETTE["accent"],
+                        selectbackground=PALETTE["raised"],
+                        padding=4)
+        style.map("TCombobox", fieldbackground=[("readonly", PALETTE["field"])],
+                  foreground=[("readonly", PALETTE["text"])])
+        style.configure("TCheckbutton", background=PALETTE["panel"],
+                        foreground=PALETTE["text"])
+        style.map("TCheckbutton", background=[("active", PALETTE["panel"])])
+        style.configure("TNotebook", background=PALETTE["panel"],
+                        borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure("TNotebook.Tab", background=PALETTE["panel"],
+                        foreground=PALETTE["muted"], padding=(16, 11), borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", PALETTE["raised"]),
+                                              ("active", PALETTE["raised"])],
+                  foreground=[("selected", PALETTE["accent"])])
+        style.configure("TScrollbar", background=PALETTE["raised"],
+                        troughcolor=PALETTE["panel"], arrowcolor=PALETTE["muted"])
+        style.configure("TPanedwindow", background=PALETTE["border"])
+
+    def _header(self):
+        top = ttk.Frame(self.root, padding=(18, 10, 18, 10))
+        top.grid(row=0, column=0, sticky="ew")
+        top.columnconfigure(1, weight=1)
+        ttk.Label(top, text="MCCP", style="Brand.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="  /  COMPANION WORKBENCH", style="Caption.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(4, 0))
+        ttk.Label(top, textvariable=self.status, style="Status.TLabel",
+                  anchor="e", width=46).grid(row=0, column=2, sticky="e")
+
+    def _metrics(self):
+        strip = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        strip.grid(row=1, column=0, sticky="ew")
+        for column in range(3):
+            strip.columnconfigure(column, weight=1, uniform="metrics")
+        self._metric(strip, "POSITION / ORIENTATION", self.pose, 0)
+        self._metric(strip, "COMPANION VITALS", self.stats, 1)
+        self._metric(strip, "SCENE DATA", self.counts, 2)
+
+    def _metric(self, parent, heading, variable, column):
+        card = ttk.Frame(parent, style="Panel.TFrame", padding=(13, 9))
+        card.grid(row=0, column=column, sticky="nsew", padx=3)
+        ttk.Label(card, text=heading, style="Muted.TLabel",
+                  font=("Segoe UI", 8)).pack(anchor="w")
+        ttk.Label(card, textvariable=variable, style="Metric.TLabel",
+                  anchor="w").pack(anchor="w", pady=(4, 0), fill="x")
+
+    def _workspace(self):
+        main = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
+        main.grid(row=2, column=0, sticky="nsew", padx=15, pady=(4, 8))
+        camera = ttk.Frame(main, style="Panel.TFrame", padding=12)
+        deck = ttk.Frame(main, style="Panel.TFrame", padding=10)
+        main.add(camera, weight=3)
+        main.add(deck, weight=2)
+
+        camera.columnconfigure(0, weight=1)
+        camera.rowconfigure(1, weight=1)
+        cap = ttk.Frame(camera, style="Panel.TFrame")
+        cap.grid(row=0, column=0, sticky="ew", pady=(0, 9))
+        ttk.Label(cap, text="COMPANION CAMERA", style="Heading.TLabel").pack(side="left")
+        self.frame_kind = ttk.Label(cap, text="NO SIGNAL",
+                                    style="Muted.TLabel", anchor="e")
+        self.frame_kind.pack(side="right")
+        self.camera_canvas = tk.Canvas(
+            camera, bg="#060B10", highlightthickness=1,
+            highlightbackground=PALETTE["border"], relief="flat", bd=0
         )
-        for rownum, colnum, label, kind, args in buttons:
-            ttk.Button(steer, text=label,
+        self.camera_canvas.grid(row=1, column=0, sticky="nsew")
+        self.camera_canvas.bind("<Configure>", self._canvas_resized)
+        self._camera_placeholder()
+
+        preview = ttk.Frame(camera, style="Panel.TFrame", padding=(0, 13, 0, 0))
+        preview.grid(row=2, column=0, sticky="ew")
+        ttk.Label(preview, text="PREVIEW", style="Muted.TLabel",
+                  font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w")
+        for col in (0, 1, 2):
+            preview.columnconfigure(col, weight=1)
+        ttk.Label(preview, text="Backend", style="Muted.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(9, 3))
+        ttk.Label(preview, text="Resolution", style="Muted.TLabel").grid(
+            row=1, column=1, sticky="w", pady=(9, 3))
+        ttk.Label(preview, text="Target FPS", style="Muted.TLabel").grid(
+            row=1, column=2, sticky="w", pady=(9, 3))
+        ttk.Combobox(preview, textvariable=self.preview_backend, state="readonly",
+                     values=("cpu", "gpu"), width=8).grid(row=2, column=0, sticky="ew", padx=(0, 8))
+        ttk.Combobox(preview, textvariable=self.preview_width, state="readonly",
+                     values=("48 × 27", "64 × 36", "80 × 45", "96 × 54", "128 × 72"),
+                     width=12).grid(row=2, column=1, sticky="ew", padx=(0, 8))
+        ttk.Combobox(preview, textvariable=self.preview_fps, state="readonly",
+                     values=tuple(str(i) for i in range(1, 9)), width=7).grid(
+            row=2, column=2, sticky="ew", padx=(0, 8))
+        ttk.Button(preview, text="Apply preview settings", style="Accent.TButton",
+                   command=self.apply_preview).grid(row=3, column=0, columnspan=3,
+                                                    sticky="ew", pady=(10, 0))
+        ttk.Label(preview, text="GPU mode uses a simplified voxel shader, not a full game camera.",
+                  style="Muted.TLabel", font=("Segoe UI", 8)).grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        deck.columnconfigure(0, weight=1)
+        deck.rowconfigure(2, weight=1)
+        controls_heading = ttk.Frame(deck, style="Panel.TFrame")
+        controls_heading.grid(row=0, column=0, sticky="ew")
+        ttk.Label(controls_heading, text="COMMAND DECK", style="Heading.TLabel").pack(
+            side="left")
+        ttk.Label(controls_heading, text="MANUAL / LOCAL", style="Muted.TLabel",
+                  font=("Consolas", 8)).pack(side="right")
+
+        # Critical buttons and permission state never scroll away.
+        quick = ttk.Frame(deck, style="Panel.TFrame")
+        quick.grid(row=1, column=0, sticky="ew", pady=(12, 11))
+        for col in range(3):
+            quick.columnconfigure(col, weight=1, uniform="quick")
+        ttk.Button(quick, text="SPAWN", style="Accent.TButton",
+                   command=lambda: self.send("spawn", {})).grid(
+            row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(quick, text="STOP", command=lambda: self.send("stop", {})).grid(
+            row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(quick, text="DESPAWN", style="Danger.TButton",
+                   command=lambda: self.send("despawn", {})).grid(
+            row=0, column=2, sticky="ew", padx=(4, 0))
+        ttk.Checkbutton(quick, variable=self.policy,
+                        text="Enable approved world-changing commands",
+                        command=self.change_policy).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+        tabs = ttk.Notebook(deck)
+        tabs.grid(row=2, column=0, sticky="nsew")
+        control_host = ttk.Frame(tabs, style="Panel.TFrame")
+        inspect_host = ttk.Frame(tabs, style="Panel.TFrame")
+        activity_host = ttk.Frame(tabs, style="Panel.TFrame")
+        tabs.add(control_host, text="CONTROL")
+        tabs.add(inspect_host, text="INSPECT")
+        tabs.add(activity_host, text="ACTIVITY")
+        self.tabs = tabs
+        control_host.columnconfigure(0, weight=1)
+        control_host.rowconfigure(0, weight=1)
+        panel = ScrollPanel(control_host)
+        panel.grid(row=0, column=0, sticky="nsew")
+        self.control_scroll = panel
+        self._build_controls(panel.content)
+        self._build_inspect(inspect_host)
+        self._build_activity(activity_host)
+
+    def _section(self, parent, name):
+        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame.pack(fill="x", pady=(3, 14))
+        ttk.Label(frame, text=name, style="Heading.TLabel").pack(
+            anchor="w", pady=(0, 9))
+        return frame
+
+    def _build_controls(self, parent):
+        movement = self._section(parent, "Movement & orientation")
+        directional = ttk.Frame(movement, style="Panel.TFrame")
+        directional.pack(fill="x")
+        for col in range(3):
+            directional.columnconfigure(col, weight=1, uniform="direction")
+        buttons = (
+            (0, 0, "↶  30°", "turn_by", {"degrees": -30}),
+            (0, 1, "↑  Forward", "move_relative", {"forward": 1, "blocks": 2}),
+            (0, 2, "30°  ↷", "turn_by", {"degrees": 30}),
+            (1, 0, "←  Strafe", "move_relative", {"strafe": -1, "blocks": 2}),
+            (1, 1, "↓  Back", "move_relative", {"forward": -1, "blocks": 2}),
+            (1, 2, "Strafe  →", "move_relative", {"strafe": 1, "blocks": 2}),
+        )
+        for row, col, label, kind, args in buttons:
+            ttk.Button(directional, text=label,
                        command=lambda k=kind, a=args: self.send(k, a)).grid(
-                           row=rownum, column=colnum, padx=2, pady=3)
-        coord = ttk.Frame(left)
-        coord.pack(fill="x", pady=8)
-        for label, var in (("X", self.x), ("Y", self.y), ("Z", self.z)):
-            ttk.Label(coord, text=label).pack(side="left", padx=(6, 0))
-            ttk.Entry(coord, textvariable=var, width=9).pack(side="left", padx=3)
-        row2 = ttk.Frame(left)
-        row2.pack(fill="x")
-        ttk.Button(row2, text="Move To XYZ",
-                   command=lambda: self.coordinate_command("move_to")).pack(side="left", padx=3)
-        ttk.Button(row2, text="Look At XYZ",
-                   command=lambda: self.coordinate_command("look_at")).pack(side="left", padx=3)
-        follow = ttk.Frame(left)
-        follow.pack(fill="x", pady=8)
-        ttk.Label(follow, text="Player to follow (blank = first online):").pack(anchor="w")
-        ttk.Entry(follow, textvariable=self.auto_follow, width=26).pack(side="left", padx=3)
-        ttk.Button(follow, text="Follow Once",
-                   command=lambda: self.send("follow", {"player": self.auto_follow.get()})).pack(side="left", padx=3)
-        say = ttk.Frame(left)
-        say.pack(fill="x", pady=8)
-        ttk.Label(left, text="Say in Minecraft chat:").pack(anchor="w")
-        ttk.Entry(say, textvariable=self.message).pack(side="left", fill="x", expand=True, padx=3)
-        ttk.Button(say, text="Say", command=lambda: self.send("say", {
-            "text": self.message.get()[:240]
-        })).pack(side="left")
-        self.feedback = ScrolledText(left, height=8, bg="#152838", fg="#d8eaf3",
-                                     wrap="word", font=("Consolas", 9))
-        self.feedback.pack(fill="both", expand=True, pady=12)
-        self.feedback.insert("end", "Control commands are proposed, approved and queued.\n"
-                             "A queued action is not proof that the game executed it.\n")
-        self.feedback.configure(state="disabled")
-        tabs = ttk.Notebook(right)
-        tabs.pack(fill="both", expand=True)
+                row=row, column=col, sticky="ew", padx=3, pady=3)
+        ttk.Button(movement, text="JUMP", command=lambda: self.send("jump", {})).pack(
+            fill="x", padx=3, pady=(4, 0))
+
+        destination = self._section(parent, "World coordinates")
+        xyz = ttk.Frame(destination, style="Panel.TFrame")
+        xyz.pack(fill="x")
+        for col, (label, var) in enumerate((("X", self.x), ("Y", self.y), ("Z", self.z))):
+            xyz.columnconfigure(col, weight=1, uniform="xyz")
+            cell = ttk.Frame(xyz, style="Panel.TFrame")
+            cell.grid(row=0, column=col, sticky="ew", padx=3)
+            ttk.Label(cell, text=label, style="Muted.TLabel").pack(anchor="w")
+            ttk.Entry(cell, textvariable=var).pack(fill="x", pady=(4, 0))
+        destination_buttons = ttk.Frame(destination, style="Panel.TFrame")
+        destination_buttons.pack(fill="x", pady=(8, 0))
+        destination_buttons.columnconfigure(0, weight=1)
+        destination_buttons.columnconfigure(1, weight=1)
+        ttk.Button(destination_buttons, text="MOVE TO XYZ", style="Accent.TButton",
+                   command=lambda: self.coordinate_command("move_to")).grid(
+            row=0, column=0, sticky="ew", padx=(3, 4))
+        ttk.Button(destination_buttons, text="LOOK AT XYZ",
+                   command=lambda: self.coordinate_command("look_at")).grid(
+            row=0, column=1, sticky="ew", padx=(4, 3))
+
+        follow = self._section(parent, "Player tracking")
+        ttk.Label(follow, text="Player name (leave empty for first online player)",
+                  style="Muted.TLabel").pack(anchor="w")
+        follow_row = ttk.Frame(follow, style="Panel.TFrame")
+        follow_row.pack(fill="x", pady=(7, 0))
+        ttk.Entry(follow_row, textvariable=self.auto_follow).pack(
+            side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Button(follow_row, text="FOLLOW",
+                   command=lambda: self.send("follow", {
+                       "player": self.auto_follow.get()
+                   })).pack(side="right")
+
+        chat = self._section(parent, "Companion speech")
+        ttk.Label(chat, text="Broadcast a message as MCCP in game chat",
+                  style="Muted.TLabel").pack(anchor="w")
+        speech = ttk.Frame(chat, style="Panel.TFrame")
+        speech.pack(fill="x", pady=(7, 0))
+        entry = ttk.Entry(speech, textvariable=self.message)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        entry.bind("<Return>", lambda event: self.send(
+            "say", {"text": self.message.get()[:240]}))
+        ttk.Button(speech, text="SAY", style="Accent.TButton", command=lambda: self.send(
+            "say", {"text": self.message.get()[:240]})).pack(side="right")
+        ttk.Label(parent, text="Commands use the same approved-action API as the future agent.",
+                  style="Muted.TLabel", font=("Segoe UI", 8), wraplength=300,
+                  justify="left").pack(anchor="w", pady=(0, 9))
+
+    def _build_inspect(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        inner = ttk.Notebook(parent)
+        inner.grid(row=0, column=0, sticky="nsew")
         self.views = {}
         for name in ("Visible Blocks", "Entities", "Inventory", "Raw Telemetry"):
-            frame = ttk.Frame(tabs, padding=5)
-            tabs.add(frame, text=name)
-            view = ScrolledText(frame, bg="#152838", fg="#d8eaf3",
-                                font=("Consolas", 9), wrap="none")
+            frame = ttk.Frame(inner, style="Panel.TFrame", padding=6)
+            inner.add(frame, text=name)
+            view = ScrolledText(frame, bg=PALETTE["field"], fg=PALETTE["text"],
+                                insertbackground=PALETTE["text"], relief="flat",
+                                borderwidth=0, font=("Consolas", 9), wrap="none")
             view.pack(fill="both", expand=True)
             self.views[name] = view
-        self.root.after(300, self.refresh)
+
+    def _build_activity(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        ttk.Label(parent, text="Command history · connection errors",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky="ew",
+                                             padx=10, pady=(12, 5))
+        self.feedback = ScrolledText(
+            parent, bg=PALETTE["field"], fg=PALETTE["text"],
+            insertbackground=PALETTE["text"], relief="flat",
+            borderwidth=0, font=("Consolas", 9), wrap="word")
+        self.feedback.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.feedback.insert("end", "MCCP COMMAND JOURNAL\n"
+                             "Commands are proposed and approved before delivery.\n"
+                             "A queued command is not proof of game execution.\n")
+        self.feedback.configure(state="disabled")
+
+    def _footer(self):
+        footer = ttk.Frame(self.root, padding=(18, 0, 18, 8))
+        footer.grid(row=3, column=0, sticky="ew")
+        ttk.Label(footer, text="LOCAL API  /  127.0.0.1:8765",
+                  style="Caption.TLabel", font=("Consolas", 9)).pack(side="left")
+        ttk.Label(footer, text="COMPANION WORKBENCH   ·   " + APP_VERSION,
+                  style="Caption.TLabel", font=("Consolas", 9)).pack(side="right")
+
+    def _camera_placeholder(self):
+        self.camera_canvas.delete("all")
+        width = max(self.camera_canvas.winfo_width(), 320)
+        height = max(self.camera_canvas.winfo_height(), 200)
+        self.camera_canvas.create_text(
+            width // 2, height // 2 - 10, text="NO CAMERA SIGNAL",
+            fill=PALETTE["muted"], font=("Consolas", 14, "bold"), tags="placeholder"
+        )
+        self.camera_canvas.create_text(
+            width // 2, height // 2 + 16, text="Waiting for companion preview",
+            fill=PALETTE["border"], font=("Segoe UI", 10), tags="placeholder"
+        )
+
+    def _canvas_resized(self, event=None):
+        if self.raw_image is None:
+            self._camera_placeholder()
+        else:
+            self._draw_camera()
+
+    def _draw_camera(self):
+        if self.raw_image is None:
+            return
+        width = max(1, self.camera_canvas.winfo_width() - 20)
+        height = max(1, self.camera_canvas.winfo_height() - 20)
+        zoom = camera_scale(self.raw_image.width(), self.raw_image.height(), width, height)
+        self.image = self.raw_image.zoom(zoom, zoom)
+        self.camera_canvas.delete("all")
+        self.camera_canvas.create_image(
+            self.camera_canvas.winfo_width() // 2,
+            self.camera_canvas.winfo_height() // 2,
+            image=self.image, anchor="center"
+        )
+        self.camera_canvas.create_rectangle(
+            0, 0, self.camera_canvas.winfo_width(), 3,
+            fill=PALETTE["accent"], outline=""
+        )
 
     def log(self, line):
         self.feedback.configure(state="normal")
