@@ -127,6 +127,31 @@ class BrainTests(unittest.TestCase):
         self.assertIn("once connected", reply)
         self.assertEqual(len(self.brain.messages), 2)
 
+    def test_ollama_disables_thinking_for_qwen3(self):
+        captured = {}
+        def fake_urlopen(request, timeout):
+            captured["request"] = json.loads(request.data)
+            return io.BytesIO(json.dumps({
+                "message": {"content": "I am ready to help."}, "done_reason": "stop"
+            }).encode())
+        with mock.patch("mccp.urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertIn("ready", self.brain.ollama("Say hello"))
+        body = captured["request"]
+        self.assertIs(body["think"], False)
+        self.assertNotIn("think", body["options"])
+        self.assertGreaterEqual(body["options"]["num_predict"], 512)
+        self.assertEqual(body["model"], "qwen3:4b")
+
+    def test_only_thinking_returns_actionable_error(self):
+        raw = io.BytesIO(json.dumps({
+            "message": {"content": "", "thinking": "Reasoning without an answer"},
+            "done_reason": "length"
+        }).encode())
+        with mock.patch("mccp.urllib.request.urlopen", return_value=raw):
+            with self.assertRaisesRegex(RuntimeError, "generated reasoning but no final answer"):
+                self.brain.ollama("Hello")
+        self.assertFalse(self.brain.messages)
+
     def test_autonomy_creates_reviewable_suggestion_only(self):
         self.brain.add_goal("Check the machine")
         self.brain.observe({"kind": "player_nearby"})

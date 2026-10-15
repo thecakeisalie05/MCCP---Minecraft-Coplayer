@@ -324,9 +324,13 @@ class Brain:
         )
         payload = json.dumps({
             "model": model, "stream": False,
+            # Qwen3 defaults to thinking. A small generation budget can be spent
+            # entirely in message.thinking, leaving message.content empty.
+            # Ollama requires think at the top level, not inside options.
+            "think": False,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": prompt}],
-            "options": {"num_predict": 240}
+            "options": {"num_predict": 512}
         }).encode("utf-8")
         request = urllib.request.Request(
             url + "/api/chat", data=payload,
@@ -337,9 +341,19 @@ class Brain:
                 result = json.load(response)
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise RuntimeError("Ollama request failed. Is Ollama running with model " + model + "? " + str(exc))
-        reply = result.get("message", {}).get("content", "")
+        message = result.get("message") or {}
+        reply = message.get("content", "")
         if not isinstance(reply, str) or not reply.strip():
-            raise RuntimeError("The model returned no text")
+            # Never mistake hidden reasoning for an answer or display it in chat.
+            if isinstance(message.get("thinking"), str) and message["thinking"].strip():
+                raise RuntimeError(
+                    "Ollama generated reasoning but no final answer. MCCP requests "
+                    "think=false; update Ollama if this persists, or use a "
+                    "non-thinking model. The model may have exhausted its token budget."
+                )
+            if result.get("done_reason") == "length":
+                raise RuntimeError("Ollama hit its response token limit before producing text.")
+            raise RuntimeError("Ollama returned an empty response; check the model and Ollama logs.")
         with self.lock:
             self.messages.append({"role": "user", "text": prompt[:1000]})
             self.messages.append({"role": "assistant", "text": reply[:6000]})

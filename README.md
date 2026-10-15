@@ -18,6 +18,8 @@ ollama pull qwen3:4b
 ~~~
 Configure another locally available model in the Brain & Model tab if desired. No OpenAI API key is required.
 
+**Qwen3 inference:** The default Qwen3 model uses a thinking channel. MCCP requests `think: false` through Ollama's `/api/chat` endpoint so the output token budget produces an actual visible answer rather than only reasoning. If MCCP reports an empty response, verify you have downloaded the configured model and update Ollama to its latest version. The local model may need time to load on the first request.
+
 ## What's implemented (alpha 0.1)
 
 - Standalone desktop dashboard (built-in Tkinter; no extra installation required for Windows executable)
