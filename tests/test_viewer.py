@@ -26,6 +26,19 @@ class FakeVar:
 
 
 class ViewerTests(unittest.TestCase):
+    def test_camera_scale_preserves_pixels_and_small_windows(self):
+        self.assertEqual(viewer.camera_scale(64, 36, 640, 360), 10)
+        self.assertEqual(viewer.camera_scale(80, 45, 500, 220), 4)
+        self.assertEqual(viewer.camera_scale(128, 72, 60, 45), 1)
+        self.assertEqual(viewer.camera_scale(0, 36, 640, 360), 1)
+
+    def test_world_commands_preserved_during_layout_redesign(self):
+        expected = {
+            "spawn", "despawn", "move_to", "look_at", "follow",
+            "move_relative", "turn_by", "jump"
+        }
+        self.assertTrue(expected.issubset(viewer.WORLD_ACTIONS))
+
     def test_background_error_callback_captures_exception_text(self):
         v = viewer.Viewer.__new__(viewer.Viewer)
         v.root = FakeRoot()
