@@ -115,7 +115,11 @@ public final class RoutePlanner {
             visited.add(cur.pos());
             expanded++;
             work++;
-            if (goal(cur.pos())) return finish(trace(cur.pos()), "found");
+            if (goal(cur.pos())) {
+                List<BlockPos> path = trace(cur.pos());
+                return finish(path, !path.isEmpty() && path.get(path.size() - 1).equals(cur.pos())
+                    ? "found" : "segment");
+            }
             updateBest(cur);
             for (Direction direction : Direction.Plane.HORIZONTAL) {
                 BlockPos lateral = cur.pos().relative(direction);
@@ -183,14 +187,16 @@ public final class RoutePlanner {
     private List<BlockPos> trace(BlockPos last) {
         ArrayList<BlockPos> path = new ArrayList<>();
         BlockPos cursor = last;
-        while (cursor != null && path.size() <= MAX_PATH_NODES) {
+        while (cursor != null && path.size() <= MAX_EXPANDED + 1) {
             path.add(cursor);
             cursor = parent.get(cursor);
         }
-        // An extremely long path must not be truncated from the start: those
-        // nodes might no longer connect to the avatar.
         if (cursor != null) return List.of();
         java.util.Collections.reverse(path);
+        // Very long routes are broken at a safe *prefix* from the avatar.
+        // The suffix will be recalculated from the actual endpoint.
+        if (path.size() > MAX_PATH_NODES)
+            return List.copyOf(path.subList(0, MAX_PATH_NODES));
         return List.copyOf(path);
     }
 
