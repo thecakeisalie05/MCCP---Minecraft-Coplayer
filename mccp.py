@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 API_VERSION = "v1"
-APP_VERSION = "0.2.0-alpha"
+APP_VERSION = "0.2.1-alpha"
 PORT = int(os.environ.get("MCCP_PORT", "8765"))
 HOST = "127.0.0.1"
 

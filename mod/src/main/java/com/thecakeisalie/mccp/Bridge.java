@@ -80,7 +80,21 @@ public final class Bridge {
         if (ticks % 5 == 0) poll(server); // 4Hz command polling while world active
         if (ticks % 40 == 0) { // 0.5Hz heavy perception: bounded raycast, nearby blocks
             CompanionEntity companion = findCompanion(server);
-            if (companion != null) sendTelemetry(Observer.capture(companion, true));
+            if (companion != null) {
+                try {
+                    sendTelemetry(Observer.capture(companion, true));
+                } catch (RuntimeException problem) {
+                    LOG.warn("MCCP telemetry capture failed; retrying pose-only: {}", problem.toString(), problem);
+                    try {
+                        JsonObject basic = Observer.capture(companion, false);
+                        basic.addProperty("frame_kind", "unavailable");
+                        basic.addProperty("frame_error", problem.getClass().getSimpleName());
+                        sendTelemetry(basic);
+                    } catch (RuntimeException basicFailure) {
+                        LOG.error("MCCP pose-only telemetry also failed", basicFailure);
+                    }
+                }
+            }
         }
     }
 

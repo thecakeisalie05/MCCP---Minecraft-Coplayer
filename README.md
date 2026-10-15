@@ -93,3 +93,7 @@ For a dedicated server not running on the user's PC, localhost routing needs a *
 See [bridge protocol](docs/GAME_BRIDGE.md). Experimental; test on a backed-up world.
 
 The viewer also includes incremental step controls (forward/back/strafe, turn, jump) separate from target-coordinate navigation. These are server-executed actions, not keyboard injection into the human's client.
+
+### Viewer telemetry recovery (v0.2.1-alpha)
+
+If the companion appears and speaks in Minecraft but MCCP-Viewer shows no position or camera, the Viewer now displays the **actual API error**, detects an outdated background brain on port 8765, and retries failed refreshes. Download **both** updated Windows executables, choose **Restart Brain** in the MCCP dashboard (or stop leftover MCCP.exe processes after closing its windows), and launch the updated viewer. The mod jar may stay installed if it is already spawning and speaking. If the viewer says **BRAIN CONNECTED / Waiting for companion telemetry**, inspect Minecraft's `latest.log` for `MCCP bridge unavailable` and `telemetry capture failed`; the network and camera paths are separately diagnosable.

@@ -31,6 +31,7 @@ class Viewer:
         self.image = None
         self.last_frame = None
         self.last_timestamp = None
+        self.last_refresh_error = None
         self.policy = tk.BooleanVar(value=False)
         self.auto_follow = tk.StringVar(value="")
         self.status = tk.StringVar(value="Connecting to local MCCP brain...")
@@ -150,7 +151,12 @@ class Viewer:
                 result = work()
                 self.root.after(0, lambda: after(result, None))
             except Exception as error:
-                self.root.after(0, lambda: after(None, str(error)))
+                # Python clears exception variables at the end of except blocks.
+                # Capture text now or the scheduled callback raises NameError and
+                # permanently kills telemetry refresh (especially hard to see in
+                # a --windowed PyInstaller build).
+                error_text = str(error)
+                self.root.after(0, lambda msg=error_text: after(None, msg))
         threading.Thread(target=thread, daemon=True).start()
 
     def change_policy(self):
@@ -199,25 +205,55 @@ class Viewer:
             return
         self.busy = True
         def work():
+            health = api("GET", "/health", timeout=2)
+            version = health.get("version", "unknown")
+            if version != APP_VERSION:
+                raise RuntimeError(
+                    "BRAIN VERSION MISMATCH: running " + str(version) +
+                    ", viewer " + APP_VERSION +
+                    ". Update MCCP.exe and click Restart Brain (or stop the "
+                    "leftover MCCP.exe --daemon process)."
+                )
             state = api("GET", "/api/v1/game/state", timeout=3)
             config = api("GET", "/api/v1/state", timeout=3)
             return state, config
         def after(value, error):
             self.busy = False
-            if error:
-                self.status.set("OFFLINE / " + error[:80])
-            else:
-                state, config = value
-                self.policy.set(bool(config.get("config", {}).get("allow_world_actions", False)))
-                self.apply_state(state)
-            self.root.after(int(POLL_SECONDS * 1000), self.refresh)
+            try:
+                if error:
+                    self.status.set("BRIDGE ERROR / " + error[:125])
+                    self.frame_kind.configure(text="Telemetry unavailable; see control log for details")
+                    if self.last_refresh_error != error:
+                        self.log("Telemetry/API error: " + error)
+                    self.last_refresh_error = error
+                else:
+                    if self.last_refresh_error:
+                        self.log("Telemetry/API connection restored.")
+                    self.last_refresh_error = None
+                    state, config = value
+                    self.policy.set(bool(config.get("config", {}).get("allow_world_actions", False)))
+                    self.apply_state(state)
+            except Exception as exc:
+                message = str(exc)
+                self.status.set("VIEWER ERROR / " + message[:110])
+                if self.last_refresh_error != message:
+                    self.log("Viewer refresh failed: " + message)
+                self.last_refresh_error = message
+            finally:
+                # Always schedule again, including unexpected decoding/UI errors.
+                self.root.after(int(POLL_SECONDS * 1000), self.refresh)
         self.background(work, after)
 
     def apply_state(self, state):
         if not isinstance(state.get("pose"), dict):
-            self.status.set("Waiting for companion / telemetry")
+            self.status.set("BRAIN CONNECTED / Waiting for companion telemetry")
+            self.frame_kind.configure(text="No telemetry yet. Check that Minecraft world and mod are running.")
             return
-        self.status.set("LIVE / companion " + str(state.get("companion_id", ""))[:8])
+        captured_ms = state.get("timestamp_ms")
+        if isinstance(captured_ms, (int, float)) and time.time() * 1000 - captured_ms > 10000:
+            self.status.set("STALE TELEMETRY / companion " + str(state.get("companion_id", ""))[:8])
+        else:
+            self.status.set("LIVE / companion " + str(state.get("companion_id", ""))[:8])
         pos = state["pose"]
         stats = state.get("stats") or {}
         self.pose.set("XYZ: %.2f %.2f %.2f    yaw %.1f° / pitch %.1f°    heading %s" % (
