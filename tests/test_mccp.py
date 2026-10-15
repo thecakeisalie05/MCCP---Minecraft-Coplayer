@@ -91,6 +91,30 @@ class BrainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.brain.update_config({"personality": ""})
 
+    def test_emergency_stop_rejects_unsent_actions(self):
+        approved = self.brain.propose("say", {"text": "Hello"})
+        self.brain.decide_proposal(approved["id"], True)
+        pending = self.brain.propose("move_to", {"x": 1})
+        result = self.brain.emergency_stop()
+        self.assertTrue(result["paused"])
+        self.assertEqual(result["discarded_commands"], 1)
+        self.assertEqual(result["rejected_proposals"], 1)
+        self.assertEqual(self.brain.poll_commands(), [])
+        self.assertEqual(pending["status"], "rejected")
+        another = self.brain.propose("say", {"text": "Not while paused"})
+        with self.assertRaises(ValueError):
+            self.brain.decide_proposal(another["id"], True)
+
+    def test_autonomous_inference_cannot_undo_emergency_stop(self):
+        self.brain.add_goal("Investigate the system")
+        self.brain.observe({"kind": "player_nearby"})
+        def interrupt(prompt):
+            self.brain.emergency_stop()
+            return "Don't say this."
+        with mock.patch.object(self.brain, "ollama", side_effect=interrupt):
+            self.brain.autonomous_tick()
+        self.assertEqual(self.brain.proposals, [])
+
     def test_local_token(self):
         first = mccp.get_or_create_token()
         self.assertGreater(len(first), 30)
@@ -160,6 +184,14 @@ class APITests(BrainTests):
         commands = self.request("POST", "/api/v1/commands/poll", {})["commands"]
         self.assertEqual(commands[0]["kind"], "follow")
         self.assertTrue(self.request("GET", "/api/v1/state")["connected"])
+
+    def test_api_emergency_stop(self):
+        self.request("POST", "/api/v1/actions/propose", {
+            "kind": "say", "arguments": {"text": "test"}
+        })
+        result = self.request("POST", "/api/v1/control", {"operation": "emergency_stop"})
+        self.assertTrue(result["paused"])
+        self.assertEqual(result["rejected_proposals"], 1)
 
     def test_pause_resume(self):
         self.assertTrue(self.request("POST", "/api/v1/control", {"operation": "pause"})["paused"])

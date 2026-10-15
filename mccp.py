@@ -271,6 +271,8 @@ class Brain:
                     continue
                 if proposal["status"] != "pending":
                     raise ValueError("Proposal already reviewed")
+                if approved and self.paused:
+                    raise ValueError("Brain is paused; resume before approving actions")
                 if approved and proposal["kind"] not in ("say", "inspect", "look_at", "stop") \
                         and not self.config["allow_world_actions"]:
                     raise ValueError("World actions are disabled; enable them first")
@@ -283,6 +285,19 @@ class Brain:
                 self.event("action", proposal["status"] + ": " + proposal["kind"])
                 return proposal
         raise ValueError("Proposal not found")
+
+    def emergency_stop(self) -> dict:
+        with self.lock:
+            self.paused = True
+            discarded = len(self.outbox)
+            self.outbox.clear()
+            rejected = 0
+            for proposal in self.proposals:
+                if proposal["status"] == "pending":
+                    proposal["status"] = "rejected"
+                    rejected += 1
+            self.event("safety", "Emergency stop: paused autonomy and cancelled unsent actions")
+            return {"paused": True, "discarded_commands": discarded, "rejected_proposals": rejected}
 
     def poll_commands(self) -> list[dict]:
         with self.lock:
@@ -353,6 +368,9 @@ class Brain:
                 "\nBased only on observations available, suggest one safe, specific next step "
                 "to the human player in one sentence. Do not pretend you executed it."
             )
+            with self.lock:
+                if self.paused or not self.config["modules"]["autonomy"]:
+                    return
             self.propose("say", {"text": thought[:400]})
             self.event("autonomy", "Suggested next step for goal: " + summary)
         except RuntimeError as exc:
@@ -368,7 +386,7 @@ class Brain:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MCCP/0.1"
+    server_version = "MCCP/0.1.2"
     brain: Brain
     token: str
 
@@ -399,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/health":
-            return self.json_response(200, {"ok": True, "service": "mccp-brain", "version": "0.1.0"})
+            return self.json_response(200, {"ok": True, "service": "mccp-brain", "version": "0.1.2"})
         if not self.authorized():
             return
         if path == "/api/v1/state":
@@ -445,11 +463,19 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"commands": self.brain.poll_commands()}
             elif path == "/api/v1/control":
                 operation = data.get("operation")
-                if operation not in ("pause", "resume"):
-                    raise ValueError("Control operation must be pause or resume")
-                self.brain.paused = operation == "pause"
-                self.brain.event("runtime", "Runtime " + ("paused" if self.brain.paused else "resumed"))
-                result = {"paused": self.brain.paused}
+                if operation == "emergency_stop":
+                    result = self.brain.emergency_stop()
+                elif operation == "shutdown":
+                    self.brain.save()
+                    self.brain.event("runtime", "Shutting down daemon")
+                    result = {"stopping": True}
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                elif operation in ("pause", "resume"):
+                    self.brain.paused = operation == "pause"
+                    self.brain.event("runtime", "Runtime " + ("paused" if self.brain.paused else "resumed"))
+                    result = {"paused": self.brain.paused}
+                else:
+                    raise ValueError("Control must be pause, resume, emergency_stop or shutdown")
             else:
                 return self.json_response(404, {"error": "Unknown endpoint"})
             return self.json_response(200, result)
@@ -581,6 +607,9 @@ def launch_gui() -> None:
     ttk.Button(toolbar, text="Start / Reconnect", command=start_clicked).pack(side="left", padx=4)
     ttk.Button(toolbar, text="Pause Autonomy", command=lambda: control("pause")).pack(side="left", padx=4)
     ttk.Button(toolbar, text="Resume", command=lambda: control("resume")).pack(side="left", padx=4)
+    ttk.Button(toolbar, text="Emergency Stop", command=lambda: control("emergency_stop")).pack(side="left", padx=4)
+    ttk.Button(toolbar, text="Stop Brain", command=lambda: messagebox.askyesno(
+        "Stop Brain", "Stop the background brain process?") and control("shutdown")).pack(side="left", padx=4)
 
     dash = panels["Dashboard"]
     ttk.Label(dash, text="Brain runtime", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(0, 8))
@@ -734,13 +763,19 @@ def launch_gui() -> None:
         refresh()
     ttk.Button(connect_panel, text="Simulate Player Nearby", command=simulate).pack(anchor="w", pady=6)
 
+    refresh_timer = [None]
+    initial_sync = [False]
+
     def refresh():
+        if refresh_timer[0] is not None:
+            root.after_cancel(refresh_timer[0])
+            refresh_timer[0] = None
         try:
             state = api("GET", "/api/v1/state", timeout=0.5)
         except Exception:
             status_var.set("OFFLINE  •  daemon unavailable")
             info_var.set("No brain process is responding. Press Start / Reconnect.")
-            root.after(1600, refresh)
+            refresh_timer[0] = root.after(1600, refresh)
             return
         status_var.set(("PAUSED" if state["paused"] else "RUNNING") +
                        ("  •  GAME CONNECTED" if state["connected"] else "  •  GAME OFFLINE"))
@@ -772,11 +807,16 @@ def launch_gui() -> None:
                 proposal_ids.append(proposal["id"])
                 proposal_list.insert("end", proposal["kind"] + " : " +
                                      json.dumps(proposal["arguments"])[:150])
+        if not initial_sync[0]:
+            model_var.set(state["config"]["model"])
+            personality_var.set(state["config"].get("personality", DEFAULT_CONFIG["personality"]))
+            autonomy_var.set(state["config"]["autonomy"])
+            initial_sync[0] = True
         for name, var in toggles.items():
             if root.focus_get() is not None:
                 var.set(state["config"]["modules"][name])
         allow_var.set(state["config"]["allow_world_actions"])
-        root.after(1600, refresh)
+        refresh_timer[0] = root.after(1600, refresh)
 
     root.after(1100, refresh)
     root.mainloop()

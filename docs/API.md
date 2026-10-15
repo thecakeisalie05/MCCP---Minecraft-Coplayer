@@ -12,7 +12,7 @@ All /api/v1/* requests require an X-MCCP-Token header whose value is obtained th
 | GET | /api/v1/state | Complete bounded runtime snapshot, config, goals, proposals, events |
 | GET | /api/v1/events?after=123 | Recent events with ID above the supplied number |
 | POST | /api/v1/config | Update allowed runtime settings, including individual modules |
-| POST | /api/v1/control | Pause or resume autonomy |
+| POST | /api/v1/control | Pause / resume autonomy, emergency stop, or shut down the daemon |
 | POST | /api/v1/observe | Deliver a game observation; refreshes connection heartbeat |
 | POST | /api/v1/message | Text chat to the local Ollama model; returns reply |
 | POST | /api/v1/memory | Persist a human-edited memory note |
@@ -60,3 +60,8 @@ A successful response contains {"reply":"..."}. Ollama must have the configured 
 - Event IDs can restart across process restarts. Snapshot/event retrieval is bounded.
 - Only one localhost trusted bridge is assumed.
 - Minecraft 1.20.1 Forge integration is planned, not present.
+
+
+### Runtime control semantics
+
+Send {"operation":"pause"} to pause autonomous planning; {"operation":"resume"} to resume it. Send {"operation":"emergency_stop"} to pause and clear unconsumed game commands and reject outstanding proposals. Approving new actions while paused is blocked. Send {"operation":"shutdown"} to save state and stop the background daemon; the GUI can restart it. This cannot undo actions already received and executed in Minecraft.

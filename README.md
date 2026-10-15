@@ -10,7 +10,7 @@ MCCP is a Windows desktop control center with a *separate, persistent background
 
 The workflow automatically builds a single Windows executable on updates to main. If the link does not exist yet, the [Actions page](https://github.com/thecakeisalie05/MCCP---Minecraft-Coplayer/actions) shows whether the initial build finished.
 
-Download MCCP.exe and run it. It launches a localhost-only background daemon. Closing the window does not terminate the daemon. The dashboard offers Start/Reconnect, Pause Autonomy, and Resume.
+Download MCCP.exe and run it. It launches a localhost-only background daemon. Closing the window does not terminate the daemon. The dashboard offers Start/Reconnect, Pause Autonomy, Resume, Emergency Stop and Stop Brain.
 
 For meaningful AI chat, install [Ollama](https://ollama.com/), run it locally, then pull the model:
 ~~~powershell
@@ -24,6 +24,8 @@ Configure another locally available model in the Brain & Model tab if desired. N
 - Dedicated brain daemon that persists when the window closes
 - Authenticated HTTP API bound only to 127.0.0.1:8765
 - Live enable/disable of perception, memory, autonomy, conversation and voice placeholder
+- Emergency stop, safe daemon shutdown and restart from the desktop
+- Single scheduled GUI refresh loop (avoids multiplying background polls)
 - Autonomy level and model selection
 - Local Ollama chat with bounded replies and a grounding prompt
 - Goals, observations, event stream, and limited autonomous suggestions
