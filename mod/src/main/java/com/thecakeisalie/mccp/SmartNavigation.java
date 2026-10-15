@@ -2,13 +2,13 @@ package com.thecakeisalie.mccp;
 
 import com.google.gson.JsonObject;
 import net.minecraft.core.BlockPos;
+import com.thecakeisalie.mccp.navigation.NavigationTerrain;
+import com.thecakeisalie.mccp.navigation.TraversalEdge;
+import com.thecakeisalie.mccp.navigation.TraversalRegistry;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.tags.BlockTags;
-import net.minecraft.world.level.block.DoorBlock;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.HashSet;
@@ -48,7 +48,7 @@ public final class SmartNavigation {
         Vec3 destination;
         Vec3 plannedFor;
         RoutePlanner planner;
-        List<BlockPos> route = List.of();
+        List<TraversalEdge> route = List.of();
         int index;
         long nextPlan;
         long lastProgress;
@@ -74,8 +74,10 @@ public final class SmartNavigation {
         final RoutePlanner planner;
         Probe(CompanionEntity entity, Vec3 target, boolean isPlayer) {
             avatar = entity.getUUID();
-            planner = new RoutePlanner((ServerLevel) entity.level(),
-                entity.blockPosition(), target, isPlayer);
+            NavigationTerrain terrain = new NavigationTerrain((ServerLevel) entity.level(), entity);
+            BlockPos anchor = terrain.startAnchor(entity);
+            planner = anchor == null ? null : new RoutePlanner(
+                (ServerLevel) entity.level(), entity, anchor, target, isPlayer);
         }
     }
 
@@ -116,7 +118,7 @@ public final class SmartNavigation {
         double distance = avatar.position().distanceTo(goal);
         if (distance <= (following ? ARRIVE : 0.95)) {
             if (s.mode == Mode.FOLLOW_CONTINUOUS) {
-                if (!s.holding) avatar.getNavigation().stop();
+                if (!s.holding) cancelActive(avatar, s);
                 s.holding = true;
                 s.planner = null;
                 s.route = List.of();
@@ -135,7 +137,10 @@ public final class SmartNavigation {
         // only a few blocks; avoid expensive one-tick replan loops.
         if (s.plannedFor != null && following
                 && goal.distanceToSqr(s.plannedFor) > 8 * 8
-                && clock >= s.nextPlan) {
+                && clock >= s.nextPlan
+                && (avatar.onGround() || new NavigationTerrain(
+                    (ServerLevel) avatar.level(), avatar).climbable(avatar.blockPosition()))) {
+            cancelActive(avatar, s);
             s.planner = null;
             s.route = List.of();
             s.rejectedEnds.clear();
@@ -153,10 +158,15 @@ public final class SmartNavigation {
 
         if (!s.route.isEmpty() && s.index < s.route.size()) {
             advance(avatar, s);
-            if (clock - s.lastProgress > STUCK_INTERVAL) {
+            // An edge may finish during advance(). Never index a completed
+            // route; allow the entity a few ticks to settle on its foothold.
+            if (s.route.isEmpty() || s.index >= s.route.size()) return;
+            int timeout = s.route.get(s.index).mode().stallTimeoutTicks();
+            if (clock - s.lastProgress > Math.max(STUCK_INTERVAL, timeout)) {
                 // This was a verified *geometric* segment, but actual mobility
                 // didn't match the model. Avoid replaying the same endpoint.
-                s.rejectedEnds.add(s.route.get(s.route.size() - 1));
+                cancelActive(avatar, s);
+                s.rejectedEnds.add(s.route.get(s.route.size() - 1).to());
                 if (s.rejectedEnds.size() > MAX_REJECTED_ENDPOINTS)
                     s.rejectedEnds.clear();
                 s.failedPlans++;
@@ -177,6 +187,11 @@ public final class SmartNavigation {
         Probe current = probe;
         if (current == null) return;
         if (locate(server, current.avatar) == null) {
+            probe = null;
+            return;
+        }
+        if (current.planner == null) {
+            speak(server, "I'm between footholds; let me settle before checking that route.");
             probe = null;
             return;
         }
@@ -253,8 +268,19 @@ public final class SmartNavigation {
     }
 
     private static void beginPlan(CompanionEntity avatar, Session s, Vec3 target) {
-        s.planner = new RoutePlanner((ServerLevel) avatar.level(),
-            avatar.blockPosition(), target, s.targetPlayer != null, s.rejectedEnds);
+        NavigationTerrain terrain = new NavigationTerrain((ServerLevel) avatar.level(), avatar);
+        BlockPos anchor = terrain.startAnchor(avatar);
+        if (anchor == null) {
+            // Especially on stairs, the integer block under the entity's feet
+            // can be SOLID while the actual body is stably supported. We must
+            // not treat that as a permanent route failure. Let physics settle.
+            s.planner = null;
+            s.detail = "waiting_for_stable_footing";
+            s.nextPlan = clock + 8;
+            return;
+        }
+        s.planner = new RoutePlanner((ServerLevel) avatar.level(), avatar,
+            anchor, target, s.targetPlayer != null, s.rejectedEnds);
         s.plannedFor = target;
         s.expandedNodes = 0;
         s.detail = "planning";
@@ -267,7 +293,7 @@ public final class SmartNavigation {
                                      Session s, RoutePlanner.Plan plan) {
         s.planner = null;
         s.expandedNodes = plan.expanded();
-        if (!plan.usable() || plan.nodes().size() < 2) {
+        if (!plan.usable() || plan.edges().isEmpty()) {
             s.failedPlans++;
             s.route = List.of();
             s.detail = plan.reason();
@@ -284,8 +310,8 @@ public final class SmartNavigation {
             speak(server, "I found another way!");
             s.announcedFailure = false;
         }
-        s.route = plan.nodes();
-        s.index = 1;
+        s.route = plan.edges();
+        s.index = 0;
         s.bestWaypointDistance = Double.POSITIVE_INFINITY;
         s.lastProgress = clock;
         s.completedSegments++;
@@ -302,90 +328,53 @@ public final class SmartNavigation {
     private static void advance(CompanionEntity avatar, Session s) {
         if (s.index >= s.route.size()) {
             s.route = List.of();
-            s.nextPlan = clock;
+            s.nextPlan = clock + 6;
             return;
         }
-        BlockPos node = s.route.get(s.index);
-        Vec3 desired = Vec3.atBottomCenterOf(node);
-        Vec3 current = avatar.position();
-        double horizontal = Math.hypot(desired.x - current.x, desired.z - current.z);
-        if (horizontal < 0.65 && Math.abs(desired.y - current.y) < 0.8) {
+        TraversalEdge edge = s.route.get(s.index);
+        // Mode-tagged arrival checks let future transportation adapters define
+        // station arrival without inheriting ordinary walking tolerances.
+        if (edge.mode().arrived(avatar, edge.to())) {
             s.index++;
             s.bestWaypointDistance = Double.POSITIVE_INFINITY;
             s.lastProgress = clock;
             if (s.index >= s.route.size()) {
                 s.route = List.of();
-                s.nextPlan = clock;
+                s.nextPlan = clock + 6;
                 return;
             }
-            node = s.route.get(s.index);
-            desired = Vec3.atBottomCenterOf(node);
-            horizontal = Math.hypot(desired.x - current.x, desired.z - current.z);
+            edge = s.route.get(s.index);
         }
-        double waypointDist = current.distanceTo(desired);
-        if (waypointDist + 0.10 < s.bestWaypointDistance) {
-            s.bestWaypointDistance = waypointDist;
+        Vec3 desired = Vec3.atBottomCenterOf(edge.to());
+        double distance = avatar.position().distanceTo(desired);
+        if (distance + 0.10 < s.bestWaypointDistance) {
+            s.bestWaypointDistance = distance;
             s.lastProgress = clock;
         }
-        if (!canStillPass(avatar, node)) {
-            s.rejectedEnds.add(s.route.get(s.route.size() - 1));
+        // Validate every edge against the *current* world before executing.
+        // Mod adapters may reject a disabled/broken elevator or vanished cart.
+        NavigationTerrain world = new NavigationTerrain((ServerLevel) avatar.level(), avatar);
+        if (!edge.mode().valid(world, edge.from(), edge.to())) {
+            edge.mode().cancel(avatar);
+            s.rejectedEnds.add(s.route.get(s.route.size() - 1).to());
             s.route = List.of();
             s.detail = "dynamic_obstacle_replanning";
             s.nextPlan = clock + 10;
             return;
         }
-        openNearbyDoors(avatar, node);
-        BlockPos at = avatar.blockPosition();
-        boolean climbable = avatar.level().getBlockState(at).is(BlockTags.CLIMBABLE)
-            || avatar.level().getBlockState(node).is(BlockTags.CLIMBABLE);
-        if (climbable && desired.y > current.y + 0.15) {
-            // Only use assisted vertical climbing on a validated climbable
-            // section. Never teleport, break blocks or ignore collision.
-            avatar.setDeltaMovement(
-                Math.max(-0.12, Math.min(0.12, (desired.x - current.x) * 0.25)),
-                0.20,
-                Math.max(-0.12, Math.min(0.12, (desired.z - current.z) * 0.25))
-            );
-            avatar.hasImpulse = true;
-        } else {
-            if (desired.y > current.y + 0.55 && horizontal < 1.6)
-                avatar.getJumpControl().jump();
-            avatar.getMoveControl().setWantedPosition(desired.x, desired.y, desired.z, 1.05);
-        }
+        edge.mode().execute(avatar, edge.from(), edge.to());
     }
 
-    private static boolean canStillPass(CompanionEntity avatar, BlockPos node) {
-        ServerLevel level = (ServerLevel) avatar.level();
-        BlockPos floor = node.below();
-        if (!level.hasChunkAt(node) || !level.hasChunkAt(node.above())
-                || !level.hasChunkAt(floor)) return false;
-        for (BlockPos at : new BlockPos[]{node, node.above()}) {
-            BlockState state = level.getBlockState(at);
-            if (!level.getFluidState(at).isEmpty() || RoutePlanner.isHazard(state)) return false;
-            if (!state.getCollisionShape(level, at).isEmpty()
-                    && !RoutePlanner.isOpenableDoor(state)) return false;
-        }
-        BlockState support = level.getBlockState(floor);
-        if (RoutePlanner.isHazard(support)) return false;
-        return !support.getCollisionShape(level, floor).isEmpty()
-            || level.getBlockState(node).is(BlockTags.CLIMBABLE)
-            || support.is(BlockTags.CLIMBABLE);
-    }
-
-    private static void openNearbyDoors(CompanionEntity avatar, BlockPos node) {
-        ServerLevel level = (ServerLevel) avatar.level();
-        for (BlockPos at : new BlockPos[]{node, node.above()}) {
-            BlockState state = level.getBlockState(at);
-            if (RoutePlanner.isOpenableDoor(state)
-                && avatar.position().distanceToSqr(Vec3.atCenterOf(at)) < 9
-                && !state.getValue(DoorBlock.OPEN)) {
-                ((DoorBlock) state.getBlock()).setOpen(avatar, level, state, at, true);
-            }
-        }
+    private static void cancelActive(CompanionEntity avatar, Session s) {
+        if (!s.route.isEmpty() && s.index < s.route.size())
+            s.route.get(s.index).mode().cancel(avatar);
     }
 
     public static void stop(CompanionEntity avatar) {
-        if (session != null && session.avatar.equals(avatar.getUUID())) session = null;
+        if (session != null && session.avatar.equals(avatar.getUUID())) {
+            cancelActive(avatar, session);
+            session = null;
+        }
         if (probe != null && probe.avatar.equals(avatar.getUUID())) probe = null;
         avatar.getNavigation().stop();
         avatar.getMoveControl().setWantedPosition(avatar.getX(), avatar.getY(), avatar.getZ(), 0);
@@ -403,11 +392,20 @@ public final class SmartNavigation {
             obj.addProperty("mode", "idle");
             obj.addProperty("status", "idle");
             obj.addProperty("remaining_waypoints", 0);
+            obj.addProperty("active_transport", "none");
+            com.google.gson.JsonArray registered = new com.google.gson.JsonArray();
+            for (var mode : TraversalRegistry.modes()) registered.add(mode.id());
+            obj.add("transport_modes", registered);
             return obj;
         }
         obj.addProperty("mode", s.mode.name().toLowerCase());
         obj.addProperty("status", s.detail);
         obj.addProperty("remaining_waypoints", Math.max(0, s.route.size() - s.index));
+        obj.addProperty("active_transport", s.route.isEmpty() || s.index >= s.route.size()
+            ? "none" : s.route.get(s.index).mode().id());
+        com.google.gson.JsonArray available = new com.google.gson.JsonArray();
+        for (var mode : TraversalRegistry.modes()) available.add(mode.id());
+        obj.add("transport_modes", available);
         obj.addProperty("search_failures", s.failedPlans);
         obj.addProperty("completed_segments", s.completedSegments);
         obj.addProperty("expanded_nodes", s.expandedNodes);

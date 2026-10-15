@@ -156,3 +156,36 @@ Limitations remain: chunk simulation distance can stop the entity from ticking, 
 4. Closed wooden doors, stairs, ladders, trapdoors, one- and two-block drops, dangerous high drops and lava should use conservative transitions and never teleport through obstacles.
 5. While moving the target, \`follow_continuous\` should replan and then hold near the player; \`stop_follow\` must cancel movement.
 6. Benchmark worst-case search on GTCEu-dense terrain; if tick times spike, reduce the node/time budgets or adjust world access.
+
+
+## Pluggable transportation and reliable footing (navigation adapters)
+
+The navigation graph is now composed from independent **transport modes** under
+\`mod/src/main/java/com/thecakeisalie/mccp/navigation/\`:
+
+- \`TraversalMode\`: a stable server-thread interface with \`id()\`, \`expand(...)\`, \`valid(...)\`, \`execute(...)\`, \`arrived(...)\`, \`cancel(...)\`, and \`stallTimeoutTicks()\`.
+- \`TraversalEdge\`: directed, positive-cost links containing \`from\`, \`to\`, and the *specific adapter* responsible for executing that movement.
+- \`TraversalRegistry\`: built-ins are \`ground\` and \`climbable\`. A trusted mod integration registers a mode through \`TraversalRegistry.register(new MyTransportMode())\`. No changes to A*, follow controls, or protocol are needed to make its edges available for planning.
+- \`NavigationTerrain\`: shared conservative world safety checks, loaded-block checks, collision/footing checks, and an optional actor reference for adapter-specific prerequisites.
+- \`GroundTraversal\`: walking, short jumping/descending, diagonal corner constraints and wooden-door opening.
+- \`LadderTraversal\`: climbable vertical transitions, including ascent and descent with an explicit physical movement executor.
+
+### Adding a future transportation mode
+
+Create a \`TraversalMode\` implementing these responsibilities:
+
+1. During \`expand\`, discover physically possible **directed** links (for example, elevator stop A -> stop B) reachable from the supplied position, supplying realistic, strictly-positive travel costs. Do not force unknown chunks to load.
+2. During \`valid\`, check the block state, station connectivity, current availability, and **actor requirements** such as vehicle access, fuel, equipment, safety, and permission. Verify this again immediately before executing, because the world may change.
+3. During \`execute\`, start/continue physical travel; use \`arrived\` to report arrival at the destination stop. Handle timeouts and cleanup in \`cancel\`.
+4. Register with \`TraversalRegistry.register(...)\` during mod setup, before navigation requests.
+
+The common A* route planner sees the adapter's directed weighted edges; the movement controller invokes the corresponding adapter until arrival. Future remote/dimension-crossing transport requires an extension to the graph's state/position type and chunk-loading policy; the current graph intentionally stays within the avatar's loaded dimension. Neither vehicles nor elevators nor portals are implemented yet.
+
+### Stair, slab and block-edge correction
+
+The previous route planner used \`avatar.blockPosition()\` directly as a planner node. When walking on partial-height blocks or straddling two block cells, that integer position can point **inside** the stair/slab or over an empty adjacent block. The search then returned \`unsafe_start\` even when the companion was physically supported.
+
+\`NavigationTerrain.startAnchor(avatar)\` now selects a nearby validated grid position based on the avatar's actual feet and the loaded world's collision geometry, without teleporting the avatar. It checks the 3x3 neighborhood at its present Y and one block up/down, with distance limits and collision support. Support checks distinguish broad walkable surfaces (including half-height slabs/stairs) from open trapdoors, narrow poles and fences. If the avatar is briefly midair during a stair transition, navigation enters \`waiting_for_stable_footing\` and retries instead of declaring failure. Path segment completion also allows a short settling period before replanning. Arrivals and movement edges remain independently validated.
+
+This reduces false footing failures; it does **not** guarantee stair climbing, ladder dismounting or arbitrary modded block movement until in-game acceptance tests pass. In a backed-up world, test each stair orientation, slabs, stairs at an edge, 2-block-high ceilings above slabs, ordinary and modded ladders (both directions), open/closed trapdoors, and the partial-path handoff from one flight of stairs to the next.
+
