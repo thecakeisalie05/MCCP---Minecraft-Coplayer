@@ -75,6 +75,22 @@ class BrainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.brain.set_goal(goal["id"], "flying")
 
+    def test_persistent_memory_and_unique_ids(self):
+        first = self.brain.add_goal("First goal")
+        note = self.brain.add_memory("The base is in the overworld.")
+        restored = mccp.Brain()
+        self.assertEqual(restored.memory[0]["text"], note["text"])
+        self.assertNotEqual(restored.add_goal("Second goal")["id"], first["id"])
+        self.assertTrue(restored.remove_memory(note["id"])["removed"])
+        with self.assertRaises(ValueError):
+            restored.remove_memory(note["id"])
+
+    def test_personality_is_editable(self):
+        self.brain.update_config({"personality": "Curious but cautious."})
+        self.assertEqual(mccp.Brain().config["personality"], "Curious but cautious.")
+        with self.assertRaises(ValueError):
+            self.brain.update_config({"personality": ""})
+
     def test_local_token(self):
         first = mccp.get_or_create_token()
         self.assertGreater(len(first), 30)

@@ -28,9 +28,11 @@ Configure another locally available model in the Brain & Model tab if desired. N
 - Local Ollama chat with bounded replies and a grounding prompt
 - Goals, observations, event stream, and limited autonomous suggestions
 - A permission-gated action proposal, approval, and command-poll queue
-- Persistent configuration and goals across restarts
+- Persistent configuration, editable personality, memory notes and goals across restarts
+- Memory browser/editor (add/delete notes)
+- Restart-safe goal identifiers
 - Simulated Minecraft player-nearby event for API testing
-- Automated Python tests and Windows executable build
+- Automated Python tests, Windows executable build, and packaged-daemon Windows smoke test
 
 ## Alpha limitations
 

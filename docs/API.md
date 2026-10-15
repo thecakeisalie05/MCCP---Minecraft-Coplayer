@@ -15,6 +15,8 @@ All /api/v1/* requests require an X-MCCP-Token header whose value is obtained th
 | POST | /api/v1/control | Pause or resume autonomy |
 | POST | /api/v1/observe | Deliver a game observation; refreshes connection heartbeat |
 | POST | /api/v1/message | Text chat to the local Ollama model; returns reply |
+| POST | /api/v1/memory | Persist a human-edited memory note |
+| POST | /api/v1/memory/delete | Remove a note by ID |
 | POST | /api/v1/goals | Add a goal |
 | POST | /api/v1/goals/status | Set goal status |
 | POST | /api/v1/actions/propose | Stage an action for review |
@@ -32,6 +34,8 @@ All /api/v1/* requests require an X-MCCP-Token header whose value is obtained th
 ~~~json
 {"model":"qwen3:4b","autonomy":40,"modules":{"autonomy":true,"voice":false}}
 ~~~
+
+Agent personality instructions can be changed live using a personality string in /api/v1/config. Memory notes can be created with {"text":"The base is at x=200"} and deleted with {"id":123}.
 
 Allowed modules: conversation, perception, memory, autonomy, voice (placeholder). Autonomy is an integer from 0 to 100. The local Ollama URL defaults to http://127.0.0.1:11434. World-changing actions additionally require allow_world_actions = true.
 

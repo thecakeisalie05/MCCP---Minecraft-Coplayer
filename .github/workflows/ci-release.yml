@@ -44,6 +44,31 @@ jobs:
           $exe = Get-Item "dist/MCCP.exe"
           if ($exe.Length -lt 5000000) { throw "Executable appears incomplete" }
           Write-Host "MCCP.exe size: $($exe.Length) bytes"
+      - name: Smoke-test the packaged daemon on Windows
+        shell: pwsh
+        run: |
+          $env:MCCP_HOME = Join-Path $env:RUNNER_TEMP "mccp-smoke"
+          $env:MCCP_PORT = "18765"
+          $process = Start-Process -FilePath (Resolve-Path "dist/MCCP.exe") -ArgumentList "--daemon" -PassThru
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              if ($process.HasExited) { throw "Packaged daemon terminated unexpectedly" }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:18765/health" -TimeoutSec 2
+                if ($health.ok) { $healthy = $true; break }
+              } catch {}
+            }
+            if (!$healthy) { throw "Packaged daemon failed its HTTP health check" }
+            $token = (Get-Content (Join-Path $env:MCCP_HOME "api-token") -Raw).Trim()
+            $headers = @{"X-MCCP-Token"=$token}
+            $state = Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/v1/state" -Headers $headers
+            if (!$state.running) { throw "Packaged daemon state check failed" }
+            Write-Host "Packaged MCCP daemon is healthy and authenticated API works"
+          } finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: MCCP-Windows-portable
@@ -55,5 +80,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete alpha-latest --yes --cleanup-tag 2>$null
-          gh release create alpha-latest "dist/MCCP.exe" --target "$env:GITHUB_SHA" --prerelease --latest=false --title "MCCP Alpha (rolling build)" --notes "Automated Windows portable executable built from commit $env:GITHUB_SHA. Local brain and GUI included. Early alpha: Minecraft bridge not yet released. Run MCCP.exe; the brain daemon launches automatically."
+          gh release view alpha-latest --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload alpha-latest "dist/MCCP.exe" --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Release upload failed" }
+            gh release edit alpha-latest --notes "Updated Windows executable built from commit $env:GITHUB_SHA. Brain GUI and daemon included; Minecraft bridge not yet released."
+          } else {
+            gh release create alpha-latest "dist/MCCP.exe" --target "$env:GITHUB_SHA" --prerelease --latest=false --title "MCCP Alpha (rolling build)" --notes "Automated Windows portable executable built from commit $env:GITHUB_SHA. Local brain and GUI included. Minecraft bridge not yet released. Run MCCP.exe; the brain daemon launches automatically."
+          }

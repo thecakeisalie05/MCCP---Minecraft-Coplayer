@@ -37,6 +37,7 @@ CONFIG_FILE = DATA / "brain.json"
 TOKEN_FILE = DATA / "api-token"
 DEFAULT_CONFIG = {
     "model": "qwen3:4b",
+    "personality": "Curious, collaborative, technically capable, and truthful about what you can observe or do.",
     "ollama_url": "http://127.0.0.1:11434",
     "autonomy": 50,
     "autonomy_interval": 60,
@@ -84,6 +85,7 @@ class Brain:
         self.counter = 0
         self.next_think = 0.0
         self.load()
+        self.counter = max([self.counter] + [int(g.get("id", 0)) for g in self.goals])
         self.event("runtime", "Brain process initialized")
 
     def load(self) -> None:
@@ -99,6 +101,7 @@ class Brain:
                     if k in DEFAULT_CONFIG["modules"]
                 })
             self.goals = saved.get("goals", [])[:100]
+            self.counter = max(self.counter, int(saved.get("counter", 0)))
             self.memory = saved.get("memory", [])[-150:]
         except (OSError, ValueError, TypeError) as exc:
             print("Could not load MCCP saved state:", exc, file=sys.stderr)
@@ -106,7 +109,7 @@ class Brain:
     def save(self) -> None:
         with self.lock:
             atomic_json_write(CONFIG_FILE, {
-                "version": 1, "config": self.config, "goals": self.goals,
+                "version": 1, "config": self.config, "goals": self.goals, "counter": self.counter,
                 "memory": self.memory[-150:]
             })
 
@@ -134,6 +137,7 @@ class Brain:
                 "goals": list(self.goals),
                 "proposals": list(self.proposals[-50:]),
                 "memory_count": len(self.memory),
+                "memories": list(self.memory[-60:]),
                 "observation_count": len(self.observations),
                 "recent_observations": list(self.observations)[-5:],
                 "events": list(self.events)[-75:],
@@ -161,6 +165,10 @@ class Brain:
                     if type(value) is not int or not 15 <= value <= 3600:
                         raise ValueError("autonomy_interval must be between 15 and 3600 seconds")
                     self.config[key] = value
+                elif key == "personality":
+                    if not isinstance(value, str) or not 1 <= len(value) <= 3000:
+                        raise ValueError("Personality instructions must contain 1–3000 characters")
+                    self.config[key] = value.strip()
                 elif key == "model":
                     if not isinstance(value, str) or not 1 <= len(value) <= 120:
                         raise ValueError("Invalid model name")
@@ -201,6 +209,29 @@ class Brain:
                     self.event("goal", "Goal " + str(goal_id) + ": " + status)
                     return goal
         raise ValueError("Goal not found")
+
+    def add_memory(self, text: str) -> dict:
+        if not isinstance(text, str) or not text.strip() or len(text) > 1500:
+            raise ValueError("Memory note must contain 1–1500 characters")
+        with self.lock:
+            if not self.config["modules"]["memory"]:
+                raise ValueError("Memory module is disabled")
+            note = {"id": self._id(), "text": text.strip(), "created": time.time()}
+            self.memory.append(note)
+            self.memory = self.memory[-150:]
+            self.save()
+            self.event("memory", "Saved an agent memory note")
+            return note
+
+    def remove_memory(self, note_id: int) -> dict:
+        with self.lock:
+            for note in self.memory:
+                if note["id"] == note_id:
+                    self.memory.remove(note)
+                    self.save()
+                    self.event("memory", "Removed a memory note")
+                    return {"removed": note_id}
+        raise ValueError("Memory not found")
 
     def observe(self, observation: dict) -> dict:
         if not isinstance(observation, dict) or not isinstance(observation.get("kind"), str):
@@ -272,6 +303,7 @@ class Brain:
             "You inhabit a modded Minecraft world; never claim you performed an action unless "
             "a game tool confirms it. Prefer concise, grounded responses. "
             "You cannot directly manipulate Minecraft through this text channel. "
+            "Personality / behavior: " + str(self.config["personality"])[:3000] + "\n" +
             "Latest world observations: " + json.dumps(context, ensure_ascii=False)[-3000:] +
             "\nSelected long-term notes: " + json.dumps(memories, ensure_ascii=False)[-1000:]
         )
@@ -399,6 +431,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.brain.add_goal(data.get("text", ""))
             elif path == "/api/v1/goals/status":
                 result = self.brain.set_goal(int(data.get("id", -1)), data.get("status", ""))
+            elif path == "/api/v1/memory":
+                result = self.brain.add_memory(data.get("text", ""))
+            elif path == "/api/v1/memory/delete":
+                result = self.brain.remove_memory(int(data.get("id", -1)))
             elif path == "/api/v1/message":
                 result = {"reply": self.brain.ollama(str(data.get("text", ""))[:2000])}
             elif path == "/api/v1/actions/propose":
@@ -519,7 +555,7 @@ def launch_gui() -> None:
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True, padx=15, pady=(0, 15))
     panels = {}
-    for title in ("Dashboard", "Brain & Model", "Goals & Actions", "Connection"):
+    for title in ("Dashboard", "Brain & Model", "Goals & Actions", "Memory", "Connection"):
         panel = ttk.Frame(notebook, padding=18)
         notebook.add(panel, text=title)
         panels[title] = panel
@@ -581,6 +617,13 @@ def launch_gui() -> None:
     ttk.Entry(row, textvariable=model_var, width=30).pack(side="left", padx=4)
     ttk.Button(row, text="Save model", command=lambda: action(
         lambda: post("config", {"model": model_var.get()}))).pack(side="left", padx=5)
+    personality_row = ttk.Frame(brain_panel)
+    personality_row.pack(fill="x", pady=(0, 8))
+    ttk.Label(personality_row, text="Personality:").pack(side="left", padx=5)
+    personality_var = tk.StringVar(value=DEFAULT_CONFIG["personality"])
+    ttk.Entry(personality_row, textvariable=personality_var).pack(side="left", fill="x", expand=True)
+    ttk.Button(personality_row, text="Apply", command=lambda: action(
+        lambda: post("config", {"personality": personality_var.get()}))).pack(side="left", padx=5)
     chat_row = ttk.Frame(brain_panel)
     chat_row.pack(fill="x", pady=4)
     chat_input = ttk.Entry(chat_row)
@@ -646,6 +689,29 @@ def launch_gui() -> None:
     ttk.Button(review_row, text="Approve Selected", command=lambda: review(True)).pack(side="left", padx=4)
     ttk.Button(review_row, text="Reject Selected", command=lambda: review(False)).pack(side="left", padx=4)
 
+    memory_panel = panels["Memory"]
+    ttk.Label(memory_panel, text="Persistent agent memories", font=("Segoe UI", 15, "bold")).pack(anchor="w")
+    ttk.Label(memory_panel, text="Editable notes survive restarts and are included in model context.").pack(anchor="w", pady=6)
+    memory_row = ttk.Frame(memory_panel)
+    memory_row.pack(fill="x", pady=8)
+    memory_entry = ttk.Entry(memory_row)
+    memory_entry.pack(side="left", fill="x", expand=True)
+    def remember():
+        note_text = memory_entry.get().strip()
+        if note_text and action(lambda: post("memory", {"text": note_text})):
+            memory_entry.delete(0, "end")
+            refresh()
+    ttk.Button(memory_row, text="Remember", command=remember).pack(side="left", padx=5)
+    memory_list = tk.Listbox(memory_panel, bg="#172530", fg="#d4e5ec", selectbackground="#2c637e")
+    memory_list.pack(fill="both", expand=True, pady=8)
+    memory_ids = []
+    def forget_note():
+        selection = memory_list.curselection()
+        if selection and selection[0] < len(memory_ids):
+            action(lambda: post("memory/delete", {"id": memory_ids[selection[0]]}))
+            refresh()
+    ttk.Button(memory_panel, text="Delete Selected Memory", command=forget_note).pack(anchor="w", pady=6)
+
     connect_panel = panels["Connection"]
     ttk.Label(connect_panel, text="Local game bridge", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(0, 12))
     ttk.Label(connect_panel, text="HTTP endpoint: http://127.0.0.1:" + str(PORT) + "/api/v1").pack(anchor="w", pady=4)
@@ -689,6 +755,11 @@ def launch_gui() -> None:
             event_view.insert("end", "[" + when + "] " + entry["kind"].upper() + ": " + entry["text"] + "\n")
         event_view.configure(state="disabled")
         event_view.see("end")
+        memory_list.delete(0, "end")
+        memory_ids.clear()
+        for note in state["memories"]:
+            memory_ids.append(note["id"])
+            memory_list.insert("end", note["text"])
         goal_list.delete(0, "end")
         goal_ids.clear()
         for goal in state["goals"]:
