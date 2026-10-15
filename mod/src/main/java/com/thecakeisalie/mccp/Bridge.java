@@ -51,11 +51,13 @@ public final class Bridge {
     }
 
     public static int removeCompanions(MinecraftServer server) {
+        // Never query an AABB spanning the entire dimension; that may force
+        // enormous entity-section scans and stall the tick thread.
         int removed = 0;
-        for (ServerLevel level : server.getAllLevels()) {
-            for (CompanionEntity companion : level.getEntitiesOfClass(
-                    CompanionEntity.class, new net.minecraft.world.phys.AABB(
-                        -30000000, -2048, -30000000, 30000000, 2048, 30000000))) {
+        for (ServerPlayer online : server.getPlayerList().getPlayers()) {
+            for (CompanionEntity companion : online.serverLevel().getEntitiesOfClass(
+                    CompanionEntity.class, online.getBoundingBox().inflate(128))) {
+                if (companion.isRemoved()) continue;
                 companion.discard();
                 removed++;
             }
@@ -177,6 +179,27 @@ public final class Bridge {
         if (companion == null) return;
         switch (kind) {
             case "despawn" -> companion.discard();
+            case "jump" -> companion.getJumpControl().jump();
+            case "turn_by" -> {
+                double degrees = Math.max(-90.0, Math.min(90.0, number(args, "degrees", 0)));
+                float yaw = companion.getYRot() + (float) degrees;
+                companion.setYRot(yaw);
+                companion.setYHeadRot(yaw);
+                companion.setYBodyRot(yaw);
+            }
+            case "move_relative" -> {
+                double forward = Math.max(-1, Math.min(1, number(args, "forward", 0)));
+                double strafe = Math.max(-1, Math.min(1, number(args, "strafe", 0)));
+                double distance = Math.max(0, Math.min(3, number(args, "blocks", 1)));
+                double yaw = Math.toRadians(companion.getYRot());
+                Vec3 forwardVector = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw));
+                Vec3 sideVector = new Vec3(forwardVector.z, 0, -forwardVector.x);
+                Vec3 delta = forwardVector.scale(forward).add(sideVector.scale(strafe));
+                if (delta.lengthSqr() > 0.0001) {
+                    Vec3 target = companion.position().add(delta.normalize().scale(distance));
+                    companion.getNavigation().moveTo(target.x, target.y, target.z, 1.0);
+                }
+            }
             case "stop" -> companion.getNavigation().stop();
             case "move_to" -> {
                 double x = number(args, "x", companion.getX());

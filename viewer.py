@@ -16,7 +16,8 @@ from tkinter.scrolledtext import ScrolledText
 from mccp import api, APP_VERSION
 
 POLL_SECONDS = 1.0
-WORLD_ACTIONS = {"spawn", "despawn", "move_to", "look_at", "follow"}
+WORLD_ACTIONS = {"spawn", "despawn", "move_to", "look_at", "follow",
+                 "move_relative", "turn_by", "jump"}
 
 
 class Viewer:
@@ -79,6 +80,22 @@ class Viewer:
         for label, kind in (("Spawn", "spawn"), ("Despawn", "despawn"),
                             ("Stop", "stop")):
             ttk.Button(row, text=label, command=lambda k=kind: self.send(k, {})).pack(side="left", padx=3)
+        steer = ttk.Frame(left)
+        steer.pack(fill="x", pady=6)
+        ttk.Label(steer, text="Step controls:").grid(row=0, column=0, columnspan=5, sticky="w")
+        buttons = (
+            (1, 0, "Turn left", "turn_by", {"degrees": -30}),
+            (1, 1, "Forward", "move_relative", {"forward": 1, "blocks": 2}),
+            (1, 2, "Jump", "jump", {}),
+            (1, 3, "Turn right", "turn_by", {"degrees": 30}),
+            (2, 0, "Left", "move_relative", {"strafe": -1, "blocks": 2}),
+            (2, 1, "Back", "move_relative", {"forward": -1, "blocks": 2}),
+            (2, 2, "Right", "move_relative", {"strafe": 1, "blocks": 2}),
+        )
+        for rownum, colnum, label, kind, args in buttons:
+            ttk.Button(steer, text=label,
+                       command=lambda k=kind, a=args: self.send(k, a)).grid(
+                           row=rownum, column=colnum, padx=2, pady=3)
         coord = ttk.Frame(left)
         coord.pack(fill="x", pady=8)
         for label, var in (("X", self.x), ("Y", self.y), ("Z", self.z)):

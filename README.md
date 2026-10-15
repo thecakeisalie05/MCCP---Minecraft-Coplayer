@@ -91,3 +91,5 @@ The companion is a **separate humanoid server entity**, not a second online-auth
 For a dedicated server not running on the user's PC, localhost routing needs a **separate authenticated relay**; this release targets integrated single-player first. The optional operator commands \`/mccp spawn\` and \`/mccp remove\` work when cheats/operators are enabled.
 
 See [bridge protocol](docs/GAME_BRIDGE.md). Experimental; test on a backed-up world.
+
+The viewer also includes incremental step controls (forward/back/strafe, turn, jump) separate from target-coordinate navigation. These are server-executed actions, not keyboard injection into the human's client.

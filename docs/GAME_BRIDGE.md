@@ -34,6 +34,9 @@ The mod polls /api/v1/commands/poll every five server ticks. Commands supported 
 | look_at | {"x":12,"y":65,"z":24} | Face target coordinates |
 | follow | {"player":"Name"} | Navigate toward player, one shot |
 | stop | {} | Stop path navigation |
+| move_relative | {"forward":1,"blocks":2} or {"strafe":-1,"blocks":2} | Navigate a bounded 0–3-block step relative to yaw |
+| turn_by | {"degrees":30} | Rotate by at most 90 degrees per command |
+| jump | {} | Request one jump |
 | say | {"text":"Hello"} | Chat with a labeled MCCP speaker (240-char maximum) |
 | inspect | {} | No-op; telemetry continues periodically |
 

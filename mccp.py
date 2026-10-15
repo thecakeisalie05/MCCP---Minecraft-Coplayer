@@ -51,7 +51,8 @@ DEFAULT_CONFIG = {
 }
 ALLOWED_ACTIONS = {
     "say", "look_at", "move_to", "follow", "inspect",
-    "interact", "build", "stop", "spawn", "despawn"
+    "interact", "build", "stop", "spawn", "despawn",
+    "jump", "turn_by", "move_relative"
 }
 
 
